@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Mealty WebApp</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <header class="header">
+    <h1>Mealty WebApp</h1>
+  </header>
+
+  <main class="container">
+    <div class="controls">
+      <label for="category">Категория:</label>
+      <select id="category">
+        <option value="all">Все</option>
+        {% for c in categories %}
+          <option value="{{ c.id }}">{{ c.name }}</option>
+        {% endfor %}
+      </select>
+      <!--   <button id="refreshBtn">Обновить</button>-->
+    </div>
+
+    <div id="grid" class="grid">
+      {% for p in products %}
+      <div class="card" 
+     data-category="{{ p.category_id }}" 
+     data-id="{{ p.seller_id or p.product_id }}" 
+     data-desc="{{ p.desc|escape }}"
+     data-title="{{ p.title|escape }}"
+     data-price="{{ p.price }}"">
+<div class="card-image">
+  {% if p.is_new %}
+    <img class="badge-new" src="/static/new.png" alt="Новинка">
+  {% endif %}
+
+  <div class="img-wrap">
+    <img
+      class="product-img lazy"
+      src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+      data-src="{{ p.img }}"
+      {% if p.img_srcset %} data-srcset="{{ p.img_srcset }}" {% endif %}
+      loading="lazy"
+      alt="{{ p.title | e }}"
+    >
+  </div>
+
+  {% if p.out_of_stock %}
+    <div class="soldout">РАСПРОДАНО</div>
+  {% endif %}
+</div>
+
+        <div class="card-body" >
+          <div class="title">{{ p.title }}</div>
+          <div class="subtitle">{{ p.subtitle }}</div>
+          <div class="price">{{ p.price }}</div>
+          <button class="order-btn" onclick="orderProduct('{{ p.seller_id or p.product_id }}')">Заказать</button>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </main>
+
+  <!-- modal -->
+  <div id="modal" class="modal" aria-hidden="true">
+    <div class="modal-inner">
+      <button class="modal-close" id="modalClose">&times;</button>
+      <img id="modalImg" src="" alt="">
+      <h2 class="title" id="modalTitle"></h2>
+      <p class="subtitle" id="modalSubtitle"></p>
+      <p id="modalDesc"></p>
+      <p><b class="price" id="modalPrice"></b></p>
+      <div class="modal-actions">
+        <button class="order-btn" id="modalOrder">Заказать</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/lazyload.js"></script>
+  <script>
+    const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+    if (tg) tg.ready();
+
+    // фильтр категорий
+    document.getElementById('category').addEventListener('change', function () {
+      const sel = this.value;
+      document.querySelectorAll('#grid .card').forEach(card => {
+        if (sel === 'all' || card.dataset.category === sel) {
+          card.style.display = '';
+        } else {
+          card.style.display = 'none';
+        }
+      });
+      window.lazyloadObserve && window.lazyloadObserve();
+    });
+
+    // делегирование клика по картинке → модалка
+    document.getElementById('grid').addEventListener('click', function(e) {
+      const t = e.target;
+      if (t && t.matches && t.matches('img.product-img')) {
+        openModal(t);
+      }
+    });
+
+    function openModal(imgEl) {
+      const card = imgEl.closest('.card');
+      const id = card.dataset.id;
+      const title = card.querySelector('.title')?.textContent || '';
+      const subtitle = card.querySelector('.subtitle')?.textContent || '';
+      const price = card.querySelector('.price')?.textContent || '';
+      const desc = card.dataset.desc || '';      
+
+      const src = imgEl.dataset.src || imgEl.src;
+
+      document.getElementById('modalImg').src = src;
+      document.getElementById('modalTitle').textContent = title;
+      document.getElementById('modalSubtitle').textContent = subtitle;
+      document.getElementById("modalDesc").textContent = desc;
+      document.getElementById('modalPrice').textContent = price;   
+
+
+      const modalOrder = document.getElementById('modalOrder');
+      modalOrder.onclick = function () { orderProduct(id); };
+
+      document.getElementById('modal').style.display = 'flex';
+      document.getElementById('modal').setAttribute('aria-hidden', 'false');
+    }
+
+    document.getElementById('modalClose').addEventListener('click', closeModal);
+    document.getElementById('modal').addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) closeModal();
+    });
+    function closeModal() {
+      document.getElementById('modal').style.display = 'none';
+      document.getElementById('modal').setAttribute('aria-hidden', 'true');
+    }
+
+function orderProduct(id) {
+  const card = document.querySelector(`.card[data-id="${id}"]`);
+  if (!card) { alert('Неизвестный продукт'); return; }
+
+  const dataToSend = {
+    product_id: card.dataset.id,
+    title: card.dataset.title,
+    price: card.dataset.price,
+    desc: card.dataset.desc,
+    link: 'https://www.mealty.ru/#sproduct_' + card.dataset.id
+  };
+
+  const json = JSON.stringify(dataToSend);
+
+  if (tg && tg.sendData) {
+    tg.sendData(json); // отправляем JSON в бот
+  } else if (navigator.clipboard) {
+    navigator.clipboard.writeText(json)
+      .then(() => alert('Скопировано: ' + json))
+      .catch(() => alert(json));
+  } else {
+    alert(json);
+  }
+}
+
+    
+
+    document.getElementById('refreshBtn').addEventListener('click', () => location.reload());
+  </script>
+</body>
+</html>

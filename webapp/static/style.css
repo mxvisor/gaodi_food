@@ -1,0 +1,214 @@
+:root {
+  --bg: #f6f7fb;
+  --card: #fff;
+  --accent: #0088cc;
+  --muted: #666;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, "Segoe UI", Roboto, Arial, sans-serif;
+  background: var(--bg);
+  color: #111;
+}
+
+.header {
+  padding: 16px;
+  background: white;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+}
+
+.container {
+  max-width: 980px;
+  margin: 18px auto;
+  padding: 0 12px;
+}
+
+
+.controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.controls select {
+  appearance: none;        /* убираем системный стиль */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background: #fff url("data:image/svg+xml;utf8,<svg fill='black' height='24' viewBox='0 0 24 24' width='24' xmlns='http://www.w3.org/2000/svg'><path d='M7 10l5 5 5-5z'/></svg>") no-repeat right 12px center;
+  background-size: 20px;
+  font-size: 16px;
+  padding: 12px 40px 12px 14px; /* место для стрелки */
+  border-radius: 8px;
+  border: 1px solid #ccc;
+  min-width: 200px;
+  cursor: pointer;
+}
+
+/* .grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+
+.card {
+  background: var(--card);
+  border-radius: 10px;
+  padding: 10px;
+  box-shadow: 0 6px 18px rgba(22,27,44,0.04);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+} */
+
+
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  align-items: stretch; /* ключевой момент — все карточки одинаковой высоты */
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between; /* растягиваем контент по вертикали */
+  height: 100%; /* чтобы растягивалось на всю высоту сетки */
+}
+
+
+.no-image {
+  width: 100%;
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  background: #f0f0f0;
+  border-radius: 8px;
+}
+
+.card-body .title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.card-body .subtitle {
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 8px;
+  min-height: 36px;
+}
+
+.card-body .price {
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.order-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  width: 100%;
+}
+
+/* modal */
+.modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.45);
+  z-index: 999;
+}
+
+.modal-inner {
+  background: white;
+  width: 92%;
+  max-width: 520px;
+  border-radius: 12px;
+  padding: 18px;
+  position: relative;
+  text-align: left;
+}
+
+.modal-inner img {
+  width: 100%;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
+.modal-close {
+  position: absolute;
+  right: 12px;
+  top: 8px;
+  border: none;
+  background: transparent;
+  font-size: 22px;
+  cursor: pointer;
+}
+
+
+/* плашка "распродано" (если вдруг рендерится) */
+.soldout {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  background: rgba(200,20,0,0.95);
+  color: #fff;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-weight: 700;
+  z-index: 11;
+  pointer-events: none;
+}
+
+.img-wrap {
+  position: relative; /* привязываем бейдж к изображению */
+  display: inline-block; /* оборачиваем только изображение */
+}
+
+
+.product-img.loaded {
+  filter: none;
+  opacity: 1;
+}
+
+
+
+.product-img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  object-fit: cover;
+}
+
+
+.card-image {
+  position: relative; /* теперь бейдж привязан к .card-image */
+}
+
+
+.badge-new {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 8;
+  max-width: 50%;
+  max-height: 50%;
+  width: auto;
+  height: auto;
+  pointer-events: none;
+}
+
+
+
+

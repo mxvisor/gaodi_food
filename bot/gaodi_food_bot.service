@@ -1,0 +1,16 @@
+[Unit]
+Description=Gaodi Food Telegram Bot (autoreload)
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/gaodi_food/bot
+ExecStart=/opt/gaodi_food/bot/start.sh
+
+#User=www-data
+#Group=www-data
+
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

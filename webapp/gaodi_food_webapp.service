@@ -1,0 +1,24 @@
+[Unit]
+Description=Gaodi Food FastAPI WebApp
+After=network.target
+
+[Service]
+# Рабочая директория, где лежит main.py
+WorkingDirectory=/opt/gaodi_food/webapp
+
+# Команда запуска uvicorn
+ExecStart=/opt/gaodi_food/webapp/start.sh
+
+# Если нужно, можно указать пользователя
+#User=www-data
+#Group=www-data
+
+# Перезапуск при сбое
+Restart=always
+RestartSec=3
+
+# Переменные окружения (если нужно)
+#Environment="PATH=/usr/local/bin:/usr/bin"
+
+[Install]
+WantedBy=multi-user.target
