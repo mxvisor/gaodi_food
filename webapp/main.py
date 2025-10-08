@@ -111,7 +111,8 @@ def fetch_all():
 
     # 2) товары: проход по category-wrapper (гарантирует связь категория->товары)
     products = []
-    seen_ids = set()
+    seen_product_category_pairs = set()  # (product_key, category_id) для избежания дублей в одной категории
+    seen_global_ids = set()  # для отслеживания обработанных товаров глобально
 
     for wrapper in soup.select(".category-wrapper"):
         wrapper_cid = wrapper.get("data-category") or wrapper.get("data-category-id") or wrapper.get("data-category-id")
@@ -127,9 +128,13 @@ def fetch_all():
             p = parse_card(item, wrapper_cid)
             if p and (p["seller_id"] or p["product_id"]):
                 key = (p["seller_id"] or p["product_id"])
-                if key not in seen_ids:
+                category_key = (key, p["category_id"])
+                
+                # Добавляем товар в каждую категорию отдельно, но только если не дубль в этой категории
+                if category_key not in seen_product_category_pairs:
                     products.append(p)
-                    seen_ids.add(key)
+                    seen_product_category_pairs.add(category_key)
+                    seen_global_ids.add(key)
 
     # 3) запасной проход — все .catalog-item (на случай карточек вне wrapper)
     for item in soup.select(".catalog-item"):
@@ -137,9 +142,13 @@ def fetch_all():
         key = (p["seller_id"] or p["product_id"]) if p else None
         if not p or not key:
             continue
-        if key not in seen_ids:
+        category_key = (key, p["category_id"])
+        
+        # Добавляем только если товар не был обработан в этой категории
+        if category_key not in seen_product_category_pairs:
             products.append(p)
-            seen_ids.add(key)
+            seen_product_category_pairs.add(category_key)
+            seen_global_ids.add(key)
             # если категория появилась и ещё не в categories_map — добавим
             cid = str(p.get("category_id") or "other")
             if cid not in categories_map:
@@ -157,17 +166,21 @@ def fetch_all():
 def parse_card(item, forced_category=None):
     """
     Парсинг одной карточки (BeautifulSoup element).
-    Возвращает словарь с полями: product_id, seller_id, category_id, title, subtitle, desc, price, img, img_srcset, link, is_new, out_of_stock
+    Возвращает словарь с полями: product_id, seller_id, category_id, title, subtitle, desc, price, img, img_srcset, link, is_new, out_of_stock, is_hidden
     """
     try:
         product_id = item.get("data-product_id") or item.get("data-product-id") or item.get("data-id")
         seller_id = item.get("data-seller-product_id") or item.get("data-seller-product-id") or item.get("data-seller-id")
         # category_id может быть на карточке или на img[data-category-id]
         category_id = item.get("data-category-id") or item.get("data-category") or ""
+        
+        # detect is_hidden: presence of 'hidden' class
+        classes = item.get("class") or []
+        is_hidden = "hidden" in classes
         title_el = item.select_one(".meal-card__name") or item.select_one(".catalog__title") or item.select_one("h3")
         subtitle_el = item.select_one(".meal-card__name-note") or item.select_one(".subtitle")
         desc_el = item.select_one(".meal-card__description") or item.select_one(".description")
-        price_el = item.select_one(".meal-card__price .basket__footer-total-count") or item.select_one(".meal-card__price") or item.select_one(".price")
+        price_el = item.select_one(".basket__footer-total-count") or item.select_one(".meal-card__price") or item.select_one(".price")
 
         # find image candidates (there can be a "newpl" badge img before main img)
         img_candidates = item.select(".meal-card__image img, .meal-card__image > img, img")
@@ -210,7 +223,8 @@ def parse_card(item, forced_category=None):
             "img_srcset": img_srcset or "",
             "link": (f"https://www.mealty.ru/#sproduct_{seller_id}" if seller_id else ""),
             "is_new": is_new,
-            "out_of_stock": out_of_stock
+            "out_of_stock": out_of_stock,
+            "is_hidden": is_hidden
         }
         return product
     except Exception:
@@ -228,11 +242,13 @@ def get_cached():
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, category: str = None):
     data = get_cached()
-    categories = data.get("categories", [])
     products = data.get("products", [])
+    # убираем распроданные и скрытые товары
+    products = [p for p in products if not p.get("out_of_stock") and not p.get("is_hidden")]
 
-    # убираем распроданные товары
-    products = [p for p in products if not p.get("out_of_stock")]
+    # Собираем категории, где есть хотя бы один не out-of-stock и не hidden товар
+    visible_category_ids = set(p["category_id"] for p in products)
+    categories = [c for c in data.get("categories", []) if c["id"] in visible_category_ids]
 
     # фильтрация по категории (если передана)
     if category:

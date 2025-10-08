@@ -55,7 +55,7 @@
         <div class="card-body" >
           <div class="title">{{ p.title }}</div>
           <div class="subtitle">{{ p.subtitle }}</div>
-          <div class="price">{{ p.price }}</div>
+          <div class="price">{{ p.price }} руб.</div>
           <button class="order-btn" onclick="orderProduct('{{ p.seller_id or p.product_id }}')">Заказать</button>
         </div>
       </div>
