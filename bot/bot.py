@@ -312,13 +312,10 @@ def make_order_text(uid: int, idx: int, order: dict) -> str:
     status = "✅ Выполнен" if order.get("done") else ("⏳ Текущий" if order.get("current") else "📦 Прошлый")
     title = order.get("title", "")
     price = order.get("price", "")
-    desc = order.get("desc", "")
     link = order.get("link", "")
     text = (
-        f"{name} — заказ #{idx+1}:\n"
-        f"Название: {title}\n"
-        f"Цена: {price}\n"
-        f"Описание: {desc}\n"
+        f"<b>{name}</b> — заказ #{idx+1}:\n"
+        f"{title} - <b>{price} ₽</b>\n"
         f"Ссылка: {link}\n"
         f"Статус: {status}"
     )
@@ -350,7 +347,7 @@ async def send_order_message(uid: int, idx: int, to_user: Optional[int] = None):
 
     target = uid if to_user is None else to_user
     try:
-        await bot.send_message(int(target), text, reply_markup=keyboard, disable_web_page_preview=True)
+        await bot.send_message(int(target), text, reply_markup=keyboard, disable_web_page_preview=True, parse_mode="HTML")
     except Exception:
         pass
 
@@ -381,7 +378,6 @@ async def webapp_data_handler(message: types.Message):
     order = {
         "title": data.get("title", ""),
         "price": data.get("price", ""),
-        "desc": data.get("desc", ""),
         "link": data.get("link", ""),
         "done": False
     }
@@ -462,16 +458,25 @@ async def all_orders_handler(message: types.Message):
     all_orders = get_all_orders_dict()
     any_current = False
     for uid_str, orders in all_orders.items():
+        user_total = 0
+
         for idx, order in enumerate(orders):
-            if order.get("current", False):
-                any_current = True
-                text = make_order_text(int(uid_str), idx, order)
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[])
-                if not order.get("done"):
-                    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(text="Отметить выполненным ✅", callback_data=f"done_{uid_str}_{idx}")]
-                    ])
-                await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True)
+            if not order.get("current", False):
+                continue
+            any_current = True
+
+            text = make_order_text(int(uid_str), idx, order)
+            user_total += int(order.get("price", 0))
+
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[])
+            if not order.get("done"):
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="Отметить выполненным ✅", callback_data=f"done_{uid_str}_{idx}")]
+                ])
+            await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True, parse_mode="HTML")
+
+        if user_total > 0:
+            await message.answer(f"💰 <b>Итого для {get_username(int(uid_str))}: {user_total} ₽</b>\n", parse_mode="HTML")
 
     if not any_current:
         await message.answer("Нет текущих заказов.", reply_markup=get_main_keyboard_for(uid))
