@@ -4,6 +4,8 @@
 import asyncio
 import json
 import atexit
+import time
+
 from pathlib import Path
 from typing import Optional
 
@@ -21,7 +23,8 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 # ========== CONFIG ==========
-from config import BOT_TOKEN, WEBAPP_URL, INITIAL_ADMIN  # config.py must provide these keys
+# config.py must define BOT_TOKEN (str), WEBAPP_URL (str), INITIAL_ADMIN (int or list[int])
+from config import BOT_TOKEN, WEBAPP_URL, INITIAL_ADMIN
 
 DATA_FILE = Path("data.json")
 
@@ -35,24 +38,46 @@ def load_data():
     Load data once into global DATA. If file missing or corrupt, create defaults.
     """
     global DATA, INITIAL_ADMIN
+
     if DATA is None:
         if DATA_FILE.exists():
             try:
                 with open(DATA_FILE, "r", encoding="utf-8") as f:
                     DATA = json.load(f)
             except Exception:
+                logging.exception("Corrupt data.json, starting with empty dataset")
                 DATA = {}
         else:
             DATA = {}
 
         # ensure required keys
-        DATA.setdefault("orders", {})      # { "user_id": [order,...], ... }
-        DATA.setdefault("admins", INITIAL_ADMIN if isinstance(INITIAL_ADMIN, list) else [INITIAL_ADMIN])
-        DATA.setdefault("users", {})       # { "user_id": "Name" }
+        DATA.setdefault("users", [])        # list of {"user_id": int, "name": str, "is_admin": bool}
+        DATA.setdefault("orders", [])       # list of {"user_id": int, "user_orders": [order,...]}
         DATA.setdefault("orders_open", False)
-        DATA.setdefault("auth_password", None)   # shared password (string) or None
-        DATA.setdefault("blacklist", [])        # list of user ids (ints) blocked
-        DATA.setdefault("attempts", {})         # per-user attempt counters { "user_id": n }
+        DATA.setdefault("auth_password", None)
+        DATA.setdefault("blacklist", [])    # list of user_id ints
+        DATA.setdefault("attempts", {})     # { user_id (int): n }
+
+        # ensure INITIAL_ADMIN is present as admin
+        if INITIAL_ADMIN is not None:
+            if not isinstance(INITIAL_ADMIN, list):
+                init_list = [INITIAL_ADMIN]
+            else:
+                init_list = INITIAL_ADMIN
+            for a in init_list:
+                try:
+                    uid = int(a)
+                except Exception:
+                    continue
+                found = False
+                for entry in DATA["users"]:
+                    if entry.get("user_id") == uid:
+                        entry["is_admin"] = True
+                        found = True
+                        break
+                if not found:
+                    DATA["users"].append({"user_id": uid, "name": "", "is_admin": True})
+
     return DATA
 
 def mark_dirty():
@@ -85,31 +110,143 @@ async def autosave_loop():
 
 atexit.register(lambda: save_data(force=True))
 
-# Helper functions that operate on DATA and call mark_dirty when mutating
+# ===== user helpers =====
+
+def _get_users() -> list[dict]:
+    """Возвращает список пользователей."""
+    return load_data().setdefault("users", [])
+
+def _find_user(user_id: int) -> Optional[dict]:
+    """Находит запись пользователя по user_id."""
+    return next((u for u in _get_users() if u.get("user_id") == user_id), None)
+
 def is_admin(user_id: int) -> bool:
-    data = load_data()
-    return user_id in data.get("admins", [])
+    user = _find_user(user_id)
+    return bool(user and user.get("is_admin"))
 
 def add_admin(user_id: int):
-    data = load_data()
-    if user_id not in data["admins"]:
-        data["admins"].append(user_id)
+    user = _find_user(user_id)
+    if user:
+        if not user.get("is_admin"):
+            user["is_admin"] = True
+            mark_dirty()
+    else:
+        _get_users().append({"user_id": user_id, "name": str(user_id), "is_admin": True})
         mark_dirty()
 
 def del_admin(user_id: int):
-    data = load_data()
-    if user_id in data["admins"]:
-        data["admins"].remove(user_id)
+    user = _find_user(user_id)
+    if user and user.get("is_admin"):
+        user["is_admin"] = False
         mark_dirty()
 
 def set_username(user_id: int, name: str):
-    data = load_data()
-    data["users"][str(user_id)] = name
-    mark_dirty()
+    user = _find_user(user_id)
+    if user:
+        if user.get("name") != name:
+            user["name"] = name
+            mark_dirty()
+    else:
+        _get_users().append({"user_id": user_id, "name": name, "is_admin": False})
+        mark_dirty()
 
 def get_username(user_id: int) -> str:
+    user = _find_user(user_id)
+    return user.get("name") if user else str(user_id)
+
+def user_exists(user_id: int) -> bool:
+    return _find_user(user_id) is not None
+
+def get_user_entry(user_id: int) -> Optional[dict]:
+    return _find_user(user_id)
+
+def remove_user(user_id: int):
     data = load_data()
-    return data["users"].get(str(user_id), str(user_id))
+    data["users"] = [u for u in data.get("users", []) if u.get("user_id") != user_id]
+    data["orders"] = [o for o in data.get("orders", []) if o.get("user_id") != user_id]
+    mark_dirty()
+
+
+#===== order helpers =====
+
+def _get_user_order_entry(user_id: int) -> Optional[dict]:
+    """Возвращает запись заказов пользователя или None."""
+    return next((e for e in load_data().setdefault("orders", []) if e.get("user_id") == user_id), None)
+
+def _get_user_orders(user_id: int) -> list[dict]:
+    """Возвращает список заказов пользователя."""
+    entry = _get_user_order_entry(user_id)
+    return entry.get("user_orders", []) if entry else []
+
+def add_order(user_id: int, order: dict):
+    """
+    Добавляет заказ пользователю.
+    Если запись пользователя отсутствует — создаёт её.
+    """
+    order.setdefault("done", False)
+    data_orders = load_data().setdefault("orders", [])
+    entry = _get_user_order_entry(user_id)
+    
+    if entry:
+        entry.setdefault("user_orders", []).append(order)
+    else:
+        data_orders.append({"user_id": user_id, "user_orders": [order]})
+    
+    mark_dirty()
+    
+    mark_dirty()
+
+def get_user_orders_all(user_id: int, is_current: Optional[bool] = None) -> list[dict]:
+    """
+    Возвращает список заказов пользователя.
+    :param is_current: 
+        True — только текущие заказы,
+        False — только прошлые,
+        None — все заказы.
+    """
+    orders = _get_user_orders(user_id)
+    if is_current is None:
+        return orders
+    return [o for o in orders if bool(o.get("current", False)) == is_current]
+
+def get_order_by_uid(user_id: int, order_uid: int) -> Optional[dict]:
+    """Возвращает заказ пользователя по order_uid или None, если не найден."""
+    return next((o for o in _get_user_orders(user_id) if o.get("order_uid") == order_uid), None)
+
+def update_order_by_uid(user_id: int, order_uid: int, updates: dict) -> bool:
+    """
+    Обновляет поля заказа конкретного пользователя по order_uid.
+    Возвращает True, если заказ найден и обновлён, иначе False.
+    """
+    orders = _get_user_orders(user_id)
+    for o in orders:
+        if o.get("order_uid") == order_uid:
+            o.update(updates)
+            mark_dirty()
+            return True
+    return False
+
+def remove_order_by_uid(user_id: int, order_uid: int) -> bool:
+    """
+    Удаляет заказ конкретного пользователя по order_uid.
+    Возвращает True, если заказ найден и удалён.
+    """
+    entry = _get_user_order_entry(user_id)
+    if entry:
+        orders = entry.get("user_orders", [])
+        for i, o in enumerate(orders):
+            if o.get("order_uid") == order_uid:
+                orders.pop(i)
+                mark_dirty()
+                return True
+    return False
+
+def get_all_orders_dict() -> list[dict]:
+    """Возвращает все записи заказов всех пользователей."""
+    return load_data().get("orders", [])
+
+
+#===== collection state helpers =====
 
 def set_collection_state(state: bool):
     data = load_data()
@@ -119,43 +256,8 @@ def set_collection_state(state: bool):
 def is_collecting() -> bool:
     return load_data().get("orders_open", False)
 
-def add_order(user_id: int, order: dict):
-    data = load_data()
-    order.setdefault("done", False)
-    order["current"] = bool(is_collecting())
-    data["orders"].setdefault(str(user_id), []).append(order)
-    mark_dirty()
+# ===== password helpers =====
 
-def get_user_orders_all(user_id: int) -> list:
-    data = load_data()
-    return data["orders"].get(str(user_id), [])
-
-def update_order(user_id: int, idx: int, order: dict):
-    data = load_data()
-    arr = data["orders"].get(str(user_id), [])
-    if 0 <= idx < len(arr):
-        arr[idx] = order
-        mark_dirty()
-
-def remove_order(user_id: int, idx: int):
-    data = load_data()
-    arr = data["orders"].get(str(user_id), [])
-    if 0 <= idx < len(arr):
-        arr.pop(idx)
-        mark_dirty()
-
-def remove_user(user_id: int):
-    data = load_data()
-    data["users"].pop(str(user_id), None)
-    data["orders"].pop(str(user_id), None)
-    if user_id in data["admins"]:
-        data["admins"].remove(user_id)
-    mark_dirty()
-
-def get_all_orders_dict():
-    return load_data().get("orders", {})
-
-# ===== password & blacklist helpers =====
 def get_auth_password() -> Optional[str]:
     return load_data().get("auth_password")
 
@@ -164,51 +266,44 @@ def set_auth_password(pwd: Optional[str]):
     data["auth_password"] = pwd
     mark_dirty()
 
+# ===== blacklist helpers =====
+
 def is_blacklisted(user_id: int) -> bool:
-    data = load_data()
-    return int(user_id) in data.get("blacklist", [])
+    return user_id in load_data().get("blacklist", [])
 
 def add_to_blacklist(user_id: int):
     data = load_data()
-    if int(user_id) not in data.get("blacklist", []):
-        data["blacklist"].append(int(user_id))
+    if user_id not in data.get("blacklist", []):
+        data["blacklist"].append(user_id)
         mark_dirty()
 
 def remove_from_blacklist(user_id: int):
     data = load_data()
-    if int(user_id) in data.get("blacklist", []):
-        data["blacklist"].remove(int(user_id))
+    if user_id in data.get("blacklist", []):
+        data["blacklist"].remove(user_id)
         mark_dirty()
 
+
+# ===== attempts helpers =====
+
 def get_attempts(user_id: int) -> int:
-    data = load_data()
-    return int(data.get("attempts", {}).get(str(user_id), 0))
+    return load_data().get("attempts", {}).get(user_id, 0)
 
 def inc_attempts(user_id: int) -> int:
     data = load_data()
     attempts = data.setdefault("attempts", {})
-    cur = int(attempts.get(str(user_id), 0))
-    cur += 1
-    attempts[str(user_id)] = cur
+    cur = attempts.get(user_id, 0) + 1
+    attempts[user_id] = cur
     mark_dirty()
     return cur
 
 def reset_attempts(user_id: int):
     data = load_data()
     attempts = data.setdefault("attempts", {})
-    if str(user_id) in attempts:
-        attempts.pop(str(user_id))
+    if user_id in attempts:
+        attempts.pop(user_id)
         mark_dirty()
 
-async def broadcast_to_all_users(bot: Bot, text: str):
-    data = load_data()
-    users = list(data.get("users", {}).keys())
-    for uid_str in users:
-        try:
-            await bot.send_message(int(uid_str), text, disable_web_page_preview=True)
-        except Exception:
-            # ignore delivery errors
-            continue
 
 # ========== BOT SETUP ==========
 bot = Bot(token=BOT_TOKEN)
@@ -238,35 +333,41 @@ def get_main_keyboard_for(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
 @dp.message(Command("start"))
 async def start_handler(message: types.Message, state: FSMContext):
     data = load_data()
-    uid = message.from_user.id
+    user_id = message.from_user.id
 
     # blacklist check
-    if is_blacklisted(uid):
+    if is_blacklisted(user_id):
         await message.answer("⛔ Вы заблокированы и не можете зарегистрироваться. Обратитесь к администратору.")
         return
 
-    if str(uid) not in data["users"]:
+    if not user_exists(user_id):
         # new user — ask name
         await message.answer("Привет! Как тебя зовут? Введи, пожалуйста, своё имя:")
         await state.set_state(UserRegistration.waiting_for_name)
         return
-    name = data["users"].get(str(uid))
-    await message.answer(f"Привет, {name}! Выбери действие:", reply_markup=get_main_keyboard_for(uid))
+    # If user entry exists but has no name, ask for it
+    entry = get_user_entry(user_id)
+    if not entry or not entry.get("name") or str(entry.get("name")).strip() == "":
+        await message.answer("Привет! Как тебя зовут? Введи, пожалуйста, своё имя:")
+        await state.set_state(UserRegistration.waiting_for_name)
+        return
+    name = get_username(user_id)
+    await message.answer(f"Привет, {name}! Выбери действие:", reply_markup=get_main_keyboard_for(user_id))
 
 @dp.message(UserRegistration.waiting_for_name)
 async def name_handler(message: types.Message, state: FSMContext):
     name = message.text.strip()
-    uid = message.from_user.id
+    user_id = message.from_user.id
 
     # if user is blacklisted, block
-    if is_blacklisted(uid):
+    if is_blacklisted(user_id):
         await message.answer("⛔ Вы заблокированы. Обратитесь к администратору.")
         await state.clear()
         return
 
-    if is_admin(uid):
-        set_username(uid, name)
-        await message.answer(f"✅ Регистрация успешна. Приятно познакомиться, Администратор {name}!", reply_markup=get_main_keyboard_for(uid))
+    if is_admin(user_id):
+        set_username(user_id, name)
+        await message.answer(f"✅ Регистрация успешна. Приятно познакомиться, Администратор {name}!", reply_markup=get_main_keyboard_for(user_id))
         await state.clear()
     else:
         # store temporary name in state and ask password
@@ -276,9 +377,9 @@ async def name_handler(message: types.Message, state: FSMContext):
 
 @dp.message(UserRegistration.waiting_for_password)
 async def password_handler(message: types.Message, state: FSMContext):
-    uid = message.from_user.id
+    user_id = message.from_user.id
     data_state = await state.get_data()
-    name = data_state.get("candidate_name", message.from_user.full_name or str(uid))
+    name = data_state.get("candidate_name", message.from_user.full_name or str(user_id))
     entered = message.text.strip()
 
     # get current auth password
@@ -291,73 +392,74 @@ async def password_handler(message: types.Message, state: FSMContext):
 
     if entered == pwd:
         # success
-        set_username(uid, name)
-        reset_attempts(uid)
-        await message.answer(f"✅ Регистрация успешна. Приятно познакомиться, {name}!", reply_markup=get_main_keyboard_for(uid))
+        set_username(user_id, name)
+        reset_attempts(user_id)
+        await message.answer(f"✅ Регистрация успешна. Приятно познакомиться, {name}!", reply_markup=get_main_keyboard_for(user_id))
         await state.clear()
     else:
         # fail
-        attempts = inc_attempts(uid)
+        attempts = inc_attempts(user_id)
         remaining = max(0, 3 - attempts)
         if attempts >= 3:
-            add_to_blacklist(uid)
+            add_to_blacklist(user_id)
             await message.answer("⛔ Слишком много неверных попыток. Вы добавлены в чёрный список.")
             await state.clear()
         else:
             await message.answer(f"Неверный пароль. Осталось попыток: {remaining}. Попробуйте ещё раз.")
 
 # ========== ORDER TEXT / SENDER ==========
-def make_order_text(uid: int, idx: int, order: dict) -> str:
-    name = get_username(uid)
+def make_order_text(user_id: int, display_idx: Optional[int], order: dict) -> str:
+    name = get_username(user_id)
     status = "✅ Выполнен" if order.get("done") else ("⏳ Текущий" if order.get("current") else "📦 Прошлый")
     title = order.get("title", "")
     price = order.get("price", "")
     link = order.get("link", "")
+    idx_part = f"#{display_idx}" if display_idx is not None else ""
     text = (
-        f"<b>{name}</b> — заказ #{idx+1}:\n"
+        f"<b>{name}</b> — заказ {idx_part}:\n"
         f"{title} - <b>{price} ₽</b>\n"
         f"Ссылка: {link}\n"
         f"Статус: {status}"
     )
     return text
 
-async def send_order_message(uid: int, idx: int, to_user: Optional[int] = None):
-    """
-    Send a single order message for absolute index idx in user's list.
-    If to_user is None => send to owner (uid). If to_user provided and is admin => send to that admin.
-    """
-    orders = get_user_orders_all(uid)
-    if not (0 <= idx < len(orders)):
-        return
-    order = orders[idx]
-    text = make_order_text(uid, idx, order)
+async def send_order_message(owner_id: int, order: dict, to_user: Optional[int] = None, display_id: Optional[int] = None):
 
+    # allow overriding the displayed index (useful when caller already knows it)
+    display_idx = display_id
+    text = make_order_text(owner_id, display_idx, order)
+    order_uid = order.get("order_uid", "")
     if order.get("current", False):
         # current: owner may cancel, admin may mark done (we'll show both buttons; handler will check permissions)
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Отменить ❌", callback_data=f"cancel_{uid}_{idx}"),
-            # InlineKeyboardButton(text="Выполнен ✅", callback_data=f"done_{uid}_{idx}")
-            ]
+            [InlineKeyboardButton(text="Отменить ❌", callback_data=f"cancel:{owner_id}:{order_uid}")]
+            # InlineKeyboardButton(text="Выполнен ✅", callback_data=f"done_{user_id}_{idx}")
         ])
     else:
         # past: owner can delete
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Удалить ❌", callback_data=f"deletepast_{uid}_{idx}")]
+            [InlineKeyboardButton(text="Удалить ❌", callback_data=f"deletepast:{owner_id}:{order_uid}")]
         ])
 
-    target = uid if to_user is None else to_user
+    target = owner_id if to_user is None else to_user
     try:
         await bot.send_message(int(target), text, reply_markup=keyboard, disable_web_page_preview=True, parse_mode="HTML")
     except Exception:
-        pass
+        logging.exception("Failed to send order message to %s", target)
+
+# =========== ORDER TOTAL ==========
+
+def get_orders_total(orders: list) -> int:
+    """Возвращает сумму по переданному списку заказов"""
+    return sum(int(o.get("price", 0)) for o in orders)
 
 # ========== WEBAPP HANDLER ==========
 @dp.message(lambda m: m.web_app_data is not None)
 async def webapp_data_handler(message: types.Message):
-    uid = message.from_user.id
+    user_id = message.from_user.id
 
     # ensure registered
-    if str(uid) not in load_data().get("users", {}):
+    if not user_exists(user_id):
         await message.answer("Вы не зарегистрированы. Нажмите /start чтобы зарегистрироваться.", disable_web_page_preview=True)
         return
 
@@ -376,147 +478,186 @@ async def webapp_data_handler(message: types.Message):
         return
 
     order = {
+        # order_uid and price are stored as integers (remove backward compatibility)
+        "order_uid": int(time.time()),
         "title": data.get("title", ""),
-        "price": data.get("price", ""),
+        "price": int(data.get("price", 0) or 0),
         "link": data.get("link", ""),
+        "current": True,
         "done": False
     }
 
-    add_order(uid, order)
-    all_orders = get_user_orders_all(uid)
-    idx = len(all_orders) - 1
-    # send owner the created order message
-    await send_order_message(uid, idx)
-    await message.answer("✅ Заказ успешно добавлен.", disable_web_page_preview=True)
+    add_order(user_id, order)
+
+    all_orders = get_user_orders_all(user_id, True)
+    # send owner the created order message and compute display index via enumerate
+    for idx, o in enumerate(all_orders):
+        if o.get("order_uid") == order.get("order_uid"):
+            await send_order_message(user_id, order, display_id=idx+1)
+            break
+    # show confirmation and the user's total for current orders
+
+    current_total = get_orders_total(all_orders)
+    await message.answer(f"✅ Заказ успешно добавлен.\n💰 Текущая сумма ваших заказов: {current_total} ₽", disable_web_page_preview=True)
 
 # ========== USER VIEWS ==========
-
 @dp.message(Command("my_current"))
 @dp.message(F.text == "Мои текущие заказы")
 async def my_current_handler(message: types.Message):
-    uid = message.from_user.id
-    arr = get_user_orders_all(uid)
-    current_indices = [i for i, o in enumerate(arr) if o.get("current", False)]
-    if not current_indices:
-        await message.answer("У вас нет текущих заказов.", reply_markup=get_main_keyboard_for(uid))
+    user_id = message.from_user.id
+    current_orders = get_user_orders_all(user_id, is_current=True)
+    if not current_orders:
+        await message.answer("У вас нет текущих заказов.", reply_markup=get_main_keyboard_for(user_id))
         return
-    for idx in current_indices:
-        await send_order_message(uid, idx)
+    for idx, order in enumerate(current_orders):
+        await send_order_message(user_id, order, display_id=idx+1)
+    # show total for current orders
+    total = get_orders_total(current_orders)
+    await message.answer(f"💰 <b>Итого по текущим заказам: {total} ₽</b>", parse_mode="HTML")
 
 @dp.message(Command("my_past"))
 @dp.message(F.text == "Мои прошлые заказы")
 async def my_past_handler(message: types.Message):
-    uid = message.from_user.id
-    arr = get_user_orders_all(uid)
-    past_indices = [i for i, o in enumerate(arr) if not o.get("current", True)]
-    if not past_indices:
-        await message.answer("У вас нет прошлых заказов.", reply_markup=get_main_keyboard_for(uid))
+    user_id = message.from_user.id
+    past_orders = get_user_orders_all(user_id, is_current=False)
+    if not past_orders:
+        await message.answer("У вас нет прошлых заказов.", reply_markup=get_main_keyboard_for(user_id))
         return
-    for idx in past_indices:
-        await send_order_message(uid, idx)
+    for idx, order in enumerate(past_orders):
+        await send_order_message(user_id, order, display_id=idx+1)
+    total = get_orders_total(past_orders)
+    await message.answer(f"💰 <b>Итого по прошлым заказам: {total} ₽</b>", parse_mode="HTML")
 
 # ========== ADMIN: start/close collection & all current orders ==========
+
+
+async def broadcast_to_all_users(bot: Bot, text: str):
+    data = load_data()
+    for entry in data.get("users", []):
+        user_id = entry.get("user_id")
+        await bot.send_message(user_id, text, disable_web_page_preview=True)
+
+
 @dp.message(Command("start_collection"))
 @dp.message(F.text == "Начать сбор заказов (админ)")
 async def start_collection_handler(message: types.Message):
-    uid = message.from_user.id
-    if not is_admin(uid):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
         await message.answer("У вас нет прав для этой команды.")
         return
 
     data = load_data()
-    # mark existing orders as past
-    for uid_str, orders in data.get("orders", {}).items():
-        for order in orders:
+    # mark existing orders as past (orders stored as list of {user_id, user_orders})
+    for entry in data.get("orders", []):
+        for order in entry.get("user_orders", []):
             order["current"] = False
     data["orders_open"] = True
     mark_dirty()
 
     await broadcast_to_all_users(bot, "🎉 Сбор заказов открыт! Можно отправлять новые заказы.")
-    await message.answer("Сбор заказов открыт и всем пользователям отправлено уведомление.", reply_markup=get_main_keyboard_for(uid))
+    await message.answer("Сбор заказов открыт и всем пользователям отправлено уведомление.", reply_markup=get_main_keyboard_for(user_id))
 
 @dp.message(Command("close_collection"))
 @dp.message(F.text == "Закрыть сбор заказов (админ)")
 async def close_collection_handler(message: types.Message):
-    uid = message.from_user.id
-    if not is_admin(uid):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
         await message.answer("У вас нет прав для этой команды.")
         return
 
     set_collection_state(False)
     await broadcast_to_all_users(bot, "⛔ Сбор заказов закрыт. Спасибо за заявки.")
-    await message.answer("Сбор заказов закрыт и уведомления отправлены.", reply_markup=get_main_keyboard_for(uid))
+    await message.answer("Сбор заказов закрыт и уведомления отправлены.", reply_markup=get_main_keyboard_for(user_id))
 
 @dp.message(Command("all_orders"))
 @dp.message(F.text == "Все заказы (админ)")
 async def all_orders_handler(message: types.Message):
-    uid = message.from_user.id
-    if not is_admin(uid):
+    user_id = message.from_user.id
+    if not is_admin(user_id):
         await message.answer("У вас нет прав для этой команды.")
         return
 
     all_orders = get_all_orders_dict()
     any_current = False
-    for uid_str, orders in all_orders.items():
-        user_total = 0
-
-        for idx, order in enumerate(orders):
+    # all_orders is a list of entries: {"user_id": int, "user_orders": [...]}
+    for entry in all_orders:
+        uid = entry.get("user_id") if isinstance(entry, dict) else None
+        if uid is None:
+            continue
+        current_idx = 0
+        for order in entry.get("user_orders", []):
             if not order.get("current", False):
                 continue
+            current_idx += 1
             any_current = True
-
-            text = make_order_text(int(uid_str), idx, order)
-            user_total += int(order.get("price", 0))
-
+            text = make_order_text(int(uid), current_idx, order)
+            order_uid = order.get("order_uid", "")
             keyboard = InlineKeyboardMarkup(inline_keyboard=[])
             if not order.get("done"):
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="Отметить выполненным ✅", callback_data=f"done_{uid_str}_{idx}")]
+                    [InlineKeyboardButton(text="Отметить выполненным ✅", callback_data=f"done:{uid}:{order_uid}")]
                 ])
             await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True, parse_mode="HTML")
 
-        if user_total > 0:
-            await message.answer(f"💰 <b>Итого для {get_username(int(uid_str))}: {user_total} ₽</b>\n", parse_mode="HTML")
-
     if not any_current:
-        await message.answer("Нет текущих заказов.", reply_markup=get_main_keyboard_for(uid))
+        await message.answer("Нет текущих заказов.", reply_markup=get_main_keyboard_for(user_id))
 
 # ========== CALLBACKS ==========
 @dp.callback_query()
 async def cb_handler(callback: types.CallbackQuery):
     data = callback.data or ""
-    parts = data.split("_")
-    if len(parts) < 3:
+    parts = data.split(":", 2)
+    if len(parts) != 3:
         await callback.answer()
         return
-
-    action = parts[0]
+    action, owner_str, order_uid = parts
     try:
-        uid = int(parts[1])
-        idx = int(parts[2])
+        owner_id = int(owner_str)
     except Exception:
         await callback.answer("Неверные данные", show_alert=True)
         return
+    # locate the order object and compute its index among the appropriate
+    # set (current or past). Indexing for current and past orders is separate.
+    # order_uid from callback is expected to be integer (no backward compatibility)
+    try:
+        order_uid_int = int(order_uid)
+    except Exception:
+        await callback.answer("Неверный идентификатор заказа", show_alert=True)
+        return
 
-    orders = get_user_orders_all(uid)
-    if not (0 <= idx < len(orders)):
+    order = get_order_by_uid(owner_id, order_uid_int)
+    if order is None:
         await callback.answer("Заказ не найден", show_alert=True)
         return
 
-    order = orders[idx]
+    # compute per-type index (0-based). Use get_user_orders_all to obtain
+    # either current or past orders — this keeps indexing separate and is simpler.
+    filtered = get_user_orders_all(owner_id, is_current=order.get("current", False))
+
+    idx = next((i for i, o in enumerate(filtered) if o.get("order_uid") == order_uid_int), None)
+    if idx is None:
+        await callback.answer("Заказ не найден", show_alert=True)
+        return
 
     # Cancel: owner or admin
     if action == "cancel":
         requester = callback.from_user.id
-        if requester != uid and not is_admin(requester):
+        if requester != owner_id and not is_admin(requester):
             await callback.answer("Нельзя отменить чужой заказ", show_alert=True)
             return
         if order.get("done"):
             await callback.answer("Нельзя отменить выполненный заказ", show_alert=True)
             return
-        remove_order(uid, idx)
-        await callback.message.edit_text(f"{get_username(uid)} — заказ #{idx+1} отменён ✅")
-        await callback.answer("Заказ отменён")
+        removed = remove_order_by_uid(owner_id, order_uid_int)
+        if removed:
+            if callback.message and hasattr(callback.message, "edit_text"):
+                try:
+                    await callback.message.edit_text(f"{get_username(owner_id)} — заказ #{idx+1} отменён ✅")
+                except Exception:
+                    logging.exception("Failed to edit callback message after cancel")
+            await callback.answer("Заказ отменён")
+        else:
+            await callback.answer("Не удалось отменить заказ", show_alert=True)
 
     # Done: admin only
     elif action == "done":
@@ -525,22 +666,34 @@ async def cb_handler(callback: types.CallbackQuery):
             await callback.answer("Только админ может отмечать заказ выполненным", show_alert=True)
             return
         order["done"] = True
-        update_order(uid, idx, order)
-        await callback.message.edit_text(f"{get_username(uid)} — заказ #{idx+1} отмечен как выполненный ✅")
+        # update stored order by its UID
+        update_order_by_uid(owner_id, order_uid_int, {"done": True})
+        if callback.message and hasattr(callback.message, "edit_text"):
+            try:
+                await callback.message.edit_text(f"{get_username(owner_id)} — заказ #{idx+1} отмечен как выполненный ✅")
+            except Exception:
+                logging.exception("Failed to edit callback message after marking done")
         await callback.answer("Заказ отмечен как выполненный")
 
     # delete past: owner only
     elif action == "deletepast":
         requester = callback.from_user.id
-        if requester != uid:
+        if requester != owner_id:
             await callback.answer("Нельзя удалять чужую запись", show_alert=True)
             return
         if order.get("current", True):
             await callback.answer("Нельзя удалить текущий заказ", show_alert=True)
             return
-        remove_order(uid, idx)
-        await callback.message.edit_text(f"{get_username(uid)} — прошлый заказ #{idx+1} удалён ❌")
-        await callback.answer("Заказ удалён")
+        removed = remove_order_by_uid(owner_id, order_uid_int)
+        if removed:
+            if callback.message and hasattr(callback.message, "edit_text"):
+                try:
+                    await callback.message.edit_text(f"{get_username(owner_id)} — прошлый заказ #{idx+1} удалён ❌")
+                except Exception:
+                    logging.exception("Failed to edit callback message after deletepast")
+            await callback.answer("Заказ удалён")
+        else:
+            await callback.answer("Не удалось удалить заказ", show_alert=True)
 
     else:
         await callback.answer()
@@ -629,15 +782,25 @@ async def list_users_cmd(message: types.Message):
         await message.answer("У вас нет прав смотреть список пользователей.")
         return
     data = load_data()
-    users = data.get("users", {})
+    users = data.get("users", [])
     if not users:
         await message.answer("Пользователей пока нет.")
         return
     lines = []
-    for uid_str, name in users.items():
-        uid = int(uid_str)
-        flag = "⭐" if uid in data.get("admins", []) else ""
-        lines.append(f"{uid}: {name} {flag}")
+    for entry in users:
+        if isinstance(entry, dict):
+            user_id = int(entry.get("user_id", 0))
+            flag = "⭐" if entry.get("is_admin") else ""
+            name = entry.get("name", str(user_id))
+        else:
+            # legacy string entry
+            try:
+                user_id = int(entry)
+            except Exception:
+                user_id = 0
+            flag = ""
+            name = str(entry)
+        lines.append(f"{user_id}: {name} {flag}")
     await message.answer("Список пользователей:\n" + "\n".join(lines))
 
 # ========== PASSWORD & BLACKLIST ADMIN ==========
@@ -685,9 +848,9 @@ async def users_blacklist_cmd(message: types.Message):
         await message.answer("Чёрный список пуст.")
         return
     lines = []
-    for uid in bl:
-        name = data.get("users", {}).get(str(uid), "")
-        lines.append(f"{uid} — {name}")
+    for user_id in bl:
+        name = get_username(user_id)
+        lines.append(f"{user_id} — {name}")
     await message.answer("Чёрный список:\n" + "\n".join(lines))
 
 @dp.message(Command("users_remove_blacklist"))
@@ -716,7 +879,7 @@ async def help_handler(message: types.Message):
     """
     /help — показывает справку. Для админов — расширенный список команд.
     """
-    uid = message.from_user.id
+    user_id = message.from_user.id
 
     user_help = (
         "📘 Помощь — пользователь:\n\n"
@@ -757,7 +920,7 @@ async def help_handler(message: types.Message):
         "- Данные сохраняются регулярно; изменения, требующие вмешательства (пароль, чёрный список), применяются сразу.\n"
     )
 
-    if is_admin(uid):
+    if is_admin(user_id):
         await message.answer(admin_help, disable_web_page_preview=True)
     else:
         await message.answer(user_help, disable_web_page_preview=True)
