@@ -7,10 +7,12 @@ import atexit
 import time
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from aiogram import exceptions
 from aiogram import Bot, Dispatcher, types, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
@@ -52,11 +54,20 @@ def load_data():
 
         # ensure required keys
         DATA.setdefault("users", [])        # list of {"user_id": int, "name": str, "is_admin": bool}
-        DATA.setdefault("orders", [])       # list of {"user_id": int, "user_orders": [order,...]}
+        DATA.setdefault("orders", [])       # list of {"user_id": int, "user_orders": [current orders], "old_user_orders": [past orders]}
         DATA.setdefault("orders_open", False)
         DATA.setdefault("auth_password", None)
         DATA.setdefault("blacklist", [])    # list of user_id ints
         DATA.setdefault("attempts", {})     # { user_id (int): n }
+
+        # ensure user_orders and old_user_orders, migrate remove "current"
+        for entry in DATA["orders"]:
+            entry.setdefault("user_orders", [])
+            entry.setdefault("old_user_orders", [])
+            # migrate: remove "current" from all orders
+            for order in entry["user_orders"] + entry["old_user_orders"]:
+                if "current" in order:
+                    del order["current"]
 
         # ensure INITIAL_ADMIN is present as admin
         if INITIAL_ADMIN is not None:
@@ -178,67 +189,85 @@ def _get_user_orders(user_id: int) -> list[dict]:
     entry = _get_user_order_entry(user_id)
     return entry.get("user_orders", []) if entry else []
 
-def add_order(user_id: int, order: dict):
+def add_user_order(user_id: int, order: dict) -> dict:
     """
     Добавляет заказ пользователю.
     Если запись пользователя отсутствует — создаёт её.
+    Если у пользователя уже есть такой товар в текущих заказах, то увеличивать количество.
+    Возвращает добавленный или обновлённый заказ.
     """
     order.setdefault("done", False)
     data_orders = load_data().setdefault("orders", [])
     entry = _get_user_order_entry(user_id)
     
     if entry:
-        entry.setdefault("user_orders", []).append(order)
+        user_orders = entry.setdefault("user_orders", [])
     else:
-        data_orders.append({"user_id": user_id, "user_orders": [order]})
+        user_orders = []
+        data_orders.append({"user_id": user_id, "user_orders": user_orders, "old_user_orders": []})
     
-    mark_dirty()
+    # Check if there's already a current order for this product_id
+    product_id = order.get("product_id")
+    existing_order = None
+    for o in user_orders:
+        if o.get("product_id") == product_id:
+            existing_order = o
+            break
     
-    mark_dirty()
+    if existing_order:
+        # Increase the count
+        existing_count = existing_order.get("count", 1)
+        new_count = order.get("count", 1)
+        existing_order["count"] = existing_count + new_count
+        mark_dirty()
+        return existing_order
+    else:
+        # Add new order
+        user_orders.append(order)
+        mark_dirty()
+        return order
 
-def get_user_orders_all(user_id: int, is_current: Optional[bool] = None) -> list[dict]:
-    """
-    Возвращает список заказов пользователя.
-    :param is_current: 
-        True — только текущие заказы,
-        False — только прошлые,
-        None — все заказы.
-    """
-    orders = _get_user_orders(user_id)
-    if is_current is None:
-        return orders
-    return [o for o in orders if bool(o.get("current", False)) == is_current]
+def get_user_orders(user_id: int, is_current: bool) -> list[dict]:
+    entry = _get_user_order_entry(user_id)
+    if not entry:
+        return []
+    if is_current:
+        return entry.get("user_orders", [])
+    else:
+        return entry.get("old_user_orders", [])
 
-def get_order_by_uid(user_id: int, order_uid: int) -> Optional[dict]:
-    """Возвращает заказ пользователя по order_uid или None, если не найден."""
-    return next((o for o in _get_user_orders(user_id) if o.get("order_uid") == order_uid), None)
+def get_user_order(user_id: int, product_id: int, is_current: bool) -> Tuple[Optional[dict], int]:
+    """Возвращает пару (заказ, display_idx) или (None, 0) если не найден."""
+    orders = get_user_orders(user_id, is_current)
+    for idx, o in enumerate(orders):
+        if o.get("product_id") == product_id:
+            return o, idx + 1
+    return None, 0
 
-def update_order_by_uid(user_id: int, order_uid: int, updates: dict) -> bool:
+def update_user_order(user_id: int, product_id: int, updates: dict) -> bool:
     """
-    Обновляет поля заказа конкретного пользователя по order_uid.
+    Обновляет поля заказа конкретного пользователя по product_id.
     Возвращает True, если заказ найден и обновлён, иначе False.
     """
-    orders = _get_user_orders(user_id)
+    orders = get_user_orders(user_id, True)
     for o in orders:
-        if o.get("order_uid") == order_uid:
+        if o.get("product_id") == product_id:
             o.update(updates)
             mark_dirty()
             return True
     return False
 
-def remove_order_by_uid(user_id: int, order_uid: int) -> bool:
+def remove_user_order(user_id: int, product_id: int, is_current: bool = True) -> bool:
     """
-    Удаляет заказ конкретного пользователя по order_uid.
+    Удаляет заказ конкретного пользователя по product_id.
     Возвращает True, если заказ найден и удалён.
     """
-    entry = _get_user_order_entry(user_id)
-    if entry:
-        orders = entry.get("user_orders", [])
-        for i, o in enumerate(orders):
-            if o.get("order_uid") == order_uid:
-                orders.pop(i)
-                mark_dirty()
-                return True
+    orders = get_user_orders(user_id, is_current)
+    for i, o in enumerate(orders):
+        if o.get("product_id") == product_id:
+            orders.pop(i)
+            mark_dirty()
+            return True
     return False
 
 def get_all_orders_dict() -> list[dict]:
@@ -306,7 +335,13 @@ def reset_attempts(user_id: int):
 
 
 # ========== BOT SETUP ==========
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(
+        parse_mode=ParseMode.HTML,
+        link_preview_is_disabled=True,  
+    ),
+)
 dp = Dispatcher()
 
 # ========== FSM ==========
@@ -408,42 +443,53 @@ async def password_handler(message: types.Message, state: FSMContext):
             await message.answer(f"Неверный пароль. Осталось попыток: {remaining}. Попробуйте ещё раз.")
 
 # ========== ORDER TEXT / SENDER ==========
-def make_order_text(user_id: int, display_idx: Optional[int], order: dict) -> str:
+def make_order_text(user_id: int, display_idx: Optional[int], order: dict, is_current: bool) -> str:
     name = get_username(user_id)
-    status = "✅ Выполнен" if order.get("done") else ("⏳ Текущий" if order.get("current") else "📦 Прошлый")
+    status = "✅ Выполнен" if order.get("done") else ("⏳ Текущий" if is_current else "📦 Прошлый")
     title = order.get("title", "")
     price = order.get("price", "")
+    count = order.get("count", 1)
     link = order.get("link", "")
     idx_part = f"#{display_idx}" if display_idx is not None else ""
     text = (
         f"<b>{name}</b> — заказ {idx_part}:\n"
         f"{title} - <b>{price} ₽</b>\n"
+        f"Количество: <b>{count}</b>\n"
         f"Ссылка: {link}\n"
         f"Статус: {status}"
     )
     return text
 
-async def send_order_message(owner_id: int, order: dict, to_user: Optional[int] = None, display_id: Optional[int] = None):
 
-    # allow overriding the displayed index (useful when caller already knows it)
-    display_idx = display_id
-    text = make_order_text(owner_id, display_idx, order)
-    order_uid = order.get("order_uid", "")
-    if order.get("current", False):
-        # current: owner may cancel, admin may mark done (we'll show both buttons; handler will check permissions)
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Отменить ❌", callback_data=f"cancel:{owner_id}:{order_uid}")]
-            # InlineKeyboardButton(text="Выполнен ✅", callback_data=f"done_{user_id}_{idx}")
+def make_order_keyboard(owner_id: int, order: dict, is_current: bool) -> Optional[InlineKeyboardMarkup]:
+    """Create an InlineKeyboardMarkup for an order or return None when no buttons should be shown.
+
+    Buttons are shown only for current orders while collection is open.
+    For past orders a single delete button is shown.
+    """
+    product_id = order.get("product_id", "")
+    if is_current and is_collecting():
+        buttons = [
+            InlineKeyboardButton(text="Увеличить ➕", callback_data=f"increase:{owner_id}:{product_id}")
+        ]
+        if order.get("count", 1) > 1:
+            buttons.append(InlineKeyboardButton(text="Уменьшить ➖", callback_data=f"decrease:{owner_id}:{product_id}"))
+        buttons.append(InlineKeyboardButton(text="Отменить ❌", callback_data=f"cancel:{owner_id}:{product_id}"))
+        return InlineKeyboardMarkup(inline_keyboard=[buttons])
+    if not is_current:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Удалить ❌", callback_data=f"deletepast:{owner_id}:{product_id}")]
         ])
-    else:
-        # past: owner can delete
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Удалить ❌", callback_data=f"deletepast:{owner_id}:{order_uid}")]
-        ])
+    return None
+
+async def send_order_message(owner_id: int, order: dict, to_user: Optional[int] = None, display_idx: Optional[int] = None, is_current: bool = True):
+    text = make_order_text(owner_id, display_idx, order, is_current)
+    keyboard = make_order_keyboard(owner_id, order, is_current)
 
     target = owner_id if to_user is None else to_user
     try:
-        await bot.send_message(int(target), text, reply_markup=keyboard, disable_web_page_preview=True, parse_mode="HTML")
+        # reply_markup accepts None
+        await bot.send_message(int(target), text, reply_markup=keyboard)
     except Exception:
         logging.exception("Failed to send order message to %s", target)
 
@@ -451,7 +497,31 @@ async def send_order_message(owner_id: int, order: dict, to_user: Optional[int] 
 
 def get_orders_total(orders: list) -> int:
     """Возвращает сумму по переданному списку заказов"""
-    return sum(int(o.get("price", 0)) for o in orders)
+    return sum(int(o.get("price", 0)) * int(o.get("count", 1)) for o in orders)
+
+async def send_updated_total(owner_id: int, is_current: bool = True):
+    """Отправляет пользователю обновленную сумму по заказам."""
+    orders = get_user_orders(owner_id, is_current=is_current)
+    await send_total_message(owner_id, orders, is_current)
+
+async def update_order_count(owner_id: int, product_id_int: int, is_increase: bool) -> tuple[bool, int]:
+    order, _ = get_user_order(owner_id, product_id_int, is_current=True)
+    if not order:
+        return False, 0
+    delta = 1 if is_increase else -1
+    new_count = order.get("count", 1) + delta
+    if new_count < 1:
+        return False, order.get("count", 1)
+    order["count"] = new_count
+    update_user_order(owner_id, product_id_int, {"count": new_count})
+    return True, new_count
+
+async def send_total_message(user_id: int, orders: list, is_current: bool):
+    """Отправляет сообщение с суммой заказов."""
+    total = get_orders_total(orders)
+    label = "текущим" if is_current else "прошлым"
+    text = f"💰 <b>Итого по {label} заказам: {total} ₽</b>"
+    await bot.send_message(user_id, text)
 
 # ========== WEBAPP HANDLER ==========
 @dp.message(lambda m: m.web_app_data is not None)
@@ -460,73 +530,70 @@ async def webapp_data_handler(message: types.Message):
 
     # ensure registered
     if not user_exists(user_id):
-        await message.answer("Вы не зарегистрированы. Нажмите /start чтобы зарегистрироваться.", disable_web_page_preview=True)
+        await message.answer("Вы не зарегистрированы. Нажмите /start чтобы зарегистрироваться.")
         return
 
     # check collecting flag
     if not is_collecting():
         await message.answer(
-            "⛔ Сбор заказов сейчас закрыт. К сожалению, ваш заказ не был принят. Следите за объявлениями в боте.",
-            disable_web_page_preview=True
+            "⛔ Сбор заказов сейчас закрыт. К сожалению, ваш заказ не был принят. Следите за объявлениями в боте."
         )
         return
 
     try:
         data = json.loads(message.web_app_data.data)
     except Exception:
-        await message.answer("Неверные данные из WebApp. Заказ не принят.", disable_web_page_preview=True)
+        await message.answer("Неверные данные из WebApp. Заказ не принят.")
         return
 
     order = {
-        # order_uid and price are stored as integers (remove backward compatibility)
-        "order_uid": int(time.time()),
+        # product_id and price are stored as integers (remove backward compatibility)
+        "product_id": int(data.get("product_id", -1)),
         "title": data.get("title", ""),
         "price": int(data.get("price", 0) or 0),
+        "count": int(data.get("count", 1) or 1),
         "link": data.get("link", ""),
-        "current": True,
         "done": False
     }
 
-    add_order(user_id, order)
+    added_order = add_user_order(user_id, order)
 
-    all_orders = get_user_orders_all(user_id, True)
+    all_orders = get_user_orders(user_id, True)
     # send owner the created order message and compute display index via enumerate
     for idx, o in enumerate(all_orders):
-        if o.get("order_uid") == order.get("order_uid"):
-            await send_order_message(user_id, order, display_id=idx+1)
+        if o.get("product_id") == added_order.get("product_id"):
+            await send_order_message(user_id, added_order, display_idx=idx+1, is_current=True)
             break
     # show confirmation and the user's total for current orders
 
-    current_total = get_orders_total(all_orders)
-    await message.answer(f"✅ Заказ успешно добавлен.\n💰 Текущая сумма ваших заказов: {current_total} ₽", disable_web_page_preview=True)
+    await message.answer("✅ Заказ успешно добавлен.")
+    await send_total_message(user_id, all_orders, True)
 
 # ========== USER VIEWS ==========
 @dp.message(Command("my_current"))
 @dp.message(F.text == "Мои текущие заказы")
 async def my_current_handler(message: types.Message):
     user_id = message.from_user.id
-    current_orders = get_user_orders_all(user_id, is_current=True)
+    current_orders = get_user_orders(user_id, True)
     if not current_orders:
         await message.answer("У вас нет текущих заказов.", reply_markup=get_main_keyboard_for(user_id))
         return
     for idx, order in enumerate(current_orders):
-        await send_order_message(user_id, order, display_id=idx+1)
+        await send_order_message(user_id, order, display_idx=idx+1, is_current=True)
     # show total for current orders
-    total = get_orders_total(current_orders)
-    await message.answer(f"💰 <b>Итого по текущим заказам: {total} ₽</b>", parse_mode="HTML")
+    await send_total_message(user_id, current_orders, True)
 
 @dp.message(Command("my_past"))
 @dp.message(F.text == "Мои прошлые заказы")
 async def my_past_handler(message: types.Message):
     user_id = message.from_user.id
-    past_orders = get_user_orders_all(user_id, is_current=False)
+    past_orders = get_user_orders(user_id, False)
     if not past_orders:
         await message.answer("У вас нет прошлых заказов.", reply_markup=get_main_keyboard_for(user_id))
         return
     for idx, order in enumerate(past_orders):
-        await send_order_message(user_id, order, display_id=idx+1)
-    total = get_orders_total(past_orders)
-    await message.answer(f"💰 <b>Итого по прошлым заказам: {total} ₽</b>", parse_mode="HTML")
+        await send_order_message(user_id, order, display_idx=idx+1, is_current=False)
+    await send_total_message(user_id, past_orders, False)
 
 # ========== ADMIN: start/close collection & all current orders ==========
 
@@ -535,7 +602,7 @@ async def broadcast_to_all_users(bot: Bot, text: str):
     data = load_data()
     for entry in data.get("users", []):
         user_id = entry.get("user_id")
-        await bot.send_message(user_id, text, disable_web_page_preview=True)
+        await bot.send_message(user_id, text)
 
 
 @dp.message(Command("start_collection"))
@@ -547,10 +614,10 @@ async def start_collection_handler(message: types.Message):
         return
 
     data = load_data()
-    # mark existing orders as past (orders stored as list of {user_id, user_orders})
+    # mark existing orders as past (move user_orders to old_user_orders)
     for entry in data.get("orders", []):
-        for order in entry.get("user_orders", []):
-            order["current"] = False
+        entry["old_user_orders"] = entry.get("user_orders", [])
+        entry["user_orders"] = []
     data["orders_open"] = True
     mark_dirty()
 
@@ -581,23 +648,21 @@ async def all_orders_handler(message: types.Message):
     any_current = False
     # all_orders is a list of entries: {"user_id": int, "user_orders": [...]}
     for entry in all_orders:
-        uid = entry.get("user_id") if isinstance(entry, dict) else None
-        if uid is None:
+        user_id = entry.get("user_id") if isinstance(entry, dict) else None
+        if user_id is None:
             continue
-        current_idx = 0
+        display_idx = 0
         for order in entry.get("user_orders", []):
-            if not order.get("current", False):
-                continue
-            current_idx += 1
+            display_idx += 1
             any_current = True
-            text = make_order_text(int(uid), current_idx, order)
-            order_uid = order.get("order_uid", "")
+            text = make_order_text(int(user_id), display_idx, order, is_current=True)
+            product_id = order.get("product_id", "")
             keyboard = InlineKeyboardMarkup(inline_keyboard=[])
             if not order.get("done"):
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="Отметить выполненным ✅", callback_data=f"done:{uid}:{order_uid}")]
+                    [InlineKeyboardButton(text="Отметить выполненным ✅", callback_data=f"done:{user_id}:{product_id}")]
                 ])
-            await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True, parse_mode="HTML")
+            await message.answer(text, reply_markup=keyboard)
 
     if not any_current:
         await message.answer("Нет текущих заказов.", reply_markup=get_main_keyboard_for(user_id))
@@ -610,7 +675,7 @@ async def cb_handler(callback: types.CallbackQuery):
     if len(parts) != 3:
         await callback.answer()
         return
-    action, owner_str, order_uid = parts
+    action, owner_str, product_id_str = parts
     try:
         owner_id = int(owner_str)
     except Exception:
@@ -618,24 +683,18 @@ async def cb_handler(callback: types.CallbackQuery):
         return
     # locate the order object and compute its index among the appropriate
     # set (current or past). Indexing for current and past orders is separate.
-    # order_uid from callback is expected to be integer (no backward compatibility)
+    # product_id from callback is expected to be integer (no backward compatibility)
     try:
-        order_uid_int = int(order_uid)
+        product_id_int = int(product_id_str)
     except Exception:
         await callback.answer("Неверный идентификатор заказа", show_alert=True)
         return
 
-    order = get_order_by_uid(owner_id, order_uid_int)
+    #изменять можно только текущие заказы
+    is_current = action in ("cancel", "increase", "decrease", "done")
+
+    order, display_idx = get_user_order(owner_id, product_id_int, is_current=is_current)
     if order is None:
-        await callback.answer("Заказ не найден", show_alert=True)
-        return
-
-    # compute per-type index (0-based). Use get_user_orders_all to obtain
-    # either current or past orders — this keeps indexing separate and is simpler.
-    filtered = get_user_orders_all(owner_id, is_current=order.get("current", False))
-
-    idx = next((i for i, o in enumerate(filtered) if o.get("order_uid") == order_uid_int), None)
-    if idx is None:
         await callback.answer("Заказ не найден", show_alert=True)
         return
 
@@ -648,14 +707,15 @@ async def cb_handler(callback: types.CallbackQuery):
         if order.get("done"):
             await callback.answer("Нельзя отменить выполненный заказ", show_alert=True)
             return
-        removed = remove_order_by_uid(owner_id, order_uid_int)
+        removed = remove_user_order(owner_id, product_id_int, is_current=True)
         if removed:
             if callback.message and hasattr(callback.message, "edit_text"):
                 try:
-                    await callback.message.edit_text(f"{get_username(owner_id)} — заказ #{idx+1} отменён ✅")
+                    await callback.message.edit_text(f"{get_username(owner_id)} — заказ #{display_idx} отменён ✅")
                 except Exception:
                     logging.exception("Failed to edit callback message after cancel")
             await callback.answer("Заказ отменён")
+            await send_updated_total(owner_id, is_current=True)
         else:
             await callback.answer("Не удалось отменить заказ", show_alert=True)
 
@@ -667,10 +727,10 @@ async def cb_handler(callback: types.CallbackQuery):
             return
         order["done"] = True
         # update stored order by its UID
-        update_order_by_uid(owner_id, order_uid_int, {"done": True})
+        update_user_order(owner_id, product_id_int, {"done": True})
         if callback.message and hasattr(callback.message, "edit_text"):
             try:
-                await callback.message.edit_text(f"{get_username(owner_id)} — заказ #{idx+1} отмечен как выполненный ✅")
+                await callback.message.edit_text(f"{get_username(owner_id)} — заказ #{display_idx} отмечен как выполненный ✅")
             except Exception:
                 logging.exception("Failed to edit callback message after marking done")
         await callback.answer("Заказ отмечен как выполненный")
@@ -681,19 +741,43 @@ async def cb_handler(callback: types.CallbackQuery):
         if requester != owner_id:
             await callback.answer("Нельзя удалять чужую запись", show_alert=True)
             return
-        if order.get("current", True):
-            await callback.answer("Нельзя удалить текущий заказ", show_alert=True)
-            return
-        removed = remove_order_by_uid(owner_id, order_uid_int)
+        removed = remove_user_order(owner_id, product_id_int, is_current=False)
         if removed:
             if callback.message and hasattr(callback.message, "edit_text"):
                 try:
-                    await callback.message.edit_text(f"{get_username(owner_id)} — прошлый заказ #{idx+1} удалён ❌")
+                    await callback.message.edit_text(f"{get_username(owner_id)} — прошлый заказ #{display_idx} удалён ❌")
                 except Exception:
                     logging.exception("Failed to edit callback message after deletepast")
             await callback.answer("Заказ удалён")
+            await send_updated_total(owner_id, is_current=False)
         else:
             await callback.answer("Не удалось удалить заказ", show_alert=True)
+
+    # increase/decrease count: owner only
+    elif action in ("increase", "decrease"):
+        if not is_collecting():
+            await callback.answer("Сбор заказов закрыт, изменения невозможны.", show_alert=True)
+            return
+        requester = callback.from_user.id
+        if requester != owner_id:
+            await callback.answer("Нельзя изменять чужой заказ", show_alert=True)
+            return
+        is_increase = action == "increase"
+        success, new_count = await update_order_count(owner_id, product_id_int, is_increase)
+        if success:
+            text = make_order_text(owner_id, display_idx, order, is_current)
+            keyboard = make_order_keyboard(owner_id, order, is_current)
+            if callback.message and hasattr(callback.message, "edit_text"):
+                try:
+                    await callback.message.edit_text(text, reply_markup=keyboard)
+                except Exception:
+                    logging.exception(f"Failed to edit message after {action}")
+            action_text = "увеличено" if is_increase else "уменьшено"
+            await callback.answer(f"Количество {action_text}")
+            await send_updated_total(owner_id, is_current=True)
+        else:
+            error_text = "Не удалось увеличить" if is_increase else "Нельзя уменьшить до 0"
+            await callback.answer(error_text, show_alert=True)
 
     else:
         await callback.answer()
@@ -921,9 +1005,9 @@ async def help_handler(message: types.Message):
     )
 
     if is_admin(user_id):
-        await message.answer(admin_help, disable_web_page_preview=True)
+        await message.answer(admin_help)
     else:
-        await message.answer(user_help, disable_web_page_preview=True)
+        await message.answer(user_help)
 
 # ========== START ==========
 
