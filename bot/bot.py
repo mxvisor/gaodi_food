@@ -791,7 +791,7 @@ async def add_admin_cmd(message: types.Message):
         return
     parts = message.text.split()
     if len(parts) != 2:
-        await message.answer("Использование: /add_admin <user_id>")
+        await message.answer("Использование: /add_admin <user_id>", parse_mode=None)
         return
     try:
         new_id = int(parts[1])
@@ -809,7 +809,7 @@ async def del_admin_cmd(message: types.Message):
         return
     parts = message.text.split()
     if len(parts) != 2:
-        await message.answer("Использование: /del_admin <user_id>")
+        await message.answer("Использование: /del_admin <user_id>", parse_mode=None)
         return
     try:
         target = int(parts[1])
@@ -830,7 +830,7 @@ async def del_user_cmd(message: types.Message):
         return
     parts = message.text.split()
     if len(parts) != 2:
-        await message.answer("Использование: /del_user <user_id>")
+        await message.answer("Использование: /del_user <user_id>", parse_mode=None)
         return
     try:
         target = int(parts[1])
@@ -848,7 +848,7 @@ async def rename_user_cmd(message: types.Message):
         return
     parts = message.text.split(maxsplit=2)
     if len(parts) < 3:
-        await message.answer("Использование: /rename_user <user_id> <новое_имя>")
+        await message.answer("Использование: /rename_user <user_id> <новое_имя>", parse_mode=None)
         return
     try:
         target = int(parts[1])
@@ -896,7 +896,7 @@ async def password_set_cmd(message: types.Message):
         return
     parts = message.text.split(maxsplit=1)
     if len(parts) != 2:
-        await message.answer("Использование: /password_set <password> (пустая строка удалит пароль)")
+        await message.answer("Использование: /password_set <password> (пустая строка удалит пароль)", parse_mode=None)
         return
     new_pwd = parts[1].strip()
     if new_pwd == "":
@@ -916,9 +916,8 @@ async def password_cmd(message: types.Message):
     if not pwd:
         await message.answer("Пароль не задан.")
     else:
-        # show masked but allow admin to view full if wants
-        masked = pwd[0] + "*"*(len(pwd)-1) if len(pwd) > 1 else "*"
-        await message.answer(f"Текущий пароль (маска): {masked}\n(админ может /password_set чтобы изменить)")
+        # show full password
+        await message.answer(f"Текущий пароль: {pwd}\n(админ может /password_set чтобы изменить)")
 
 @dp.message(Command("users_blacklist"))
 async def users_blacklist_cmd(message: types.Message):
@@ -945,7 +944,7 @@ async def users_remove_blacklist_cmd(message: types.Message):
         return
     parts = message.text.split()
     if len(parts) != 2:
-        await message.answer("Использование: /users_remove_blacklist <user_id>")
+        await message.answer("Использование: /users_remove_blacklist <user_id>", parse_mode=None)
         return
     try:
         target = int(parts[1])
@@ -1005,7 +1004,7 @@ async def help_handler(message: types.Message):
     )
 
     if is_admin(user_id):
-        await message.answer(admin_help)
+        await message.answer(admin_help, parse_mode=None)
     else:
         await message.answer(user_help)
 
