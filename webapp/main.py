@@ -221,7 +221,7 @@ def parse_card(item, forced_category=None):
             "price": (price_el.get_text(strip=True) if price_el else "") or "",
             "img": img or "",
             "img_srcset": img_srcset or "",
-            "link": (f"https://www.mealty.ru/#sproduct_{seller_id}" if seller_id else ""),
+#            "link": (f"https://www.mealty.ru/#sproduct_{seller_id}" if seller_id else ""),
             "is_new": is_new,
             "out_of_stock": out_of_stock,
             "is_hidden": is_hidden

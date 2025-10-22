@@ -56,6 +56,11 @@
           <div class="title">{{ p.title }}</div>
           <div class="subtitle">{{ p.subtitle }}</div>
           <div class="price">{{ p.price }} руб.</div>
+          <div class="quantity-controls">
+            <button class="qty-btn qty-minus" onclick="changeQuantity('{{ p.seller_id or p.product_id }}', -1)">-</button>
+            <input type="number" class="qty-input" id="qty-{{ p.seller_id or p.product_id }}" value="1" min="1" readonly>
+            <button class="qty-btn qty-plus" onclick="changeQuantity('{{ p.seller_id or p.product_id }}', 1)">+</button>
+          </div>
           <button class="order-btn" onclick="orderProduct('{{ p.seller_id or p.product_id }}')">Заказать</button>
         </div>
       </div>
@@ -73,6 +78,11 @@
       <p id="modalDesc"></p>
       <p><b class="price" id="modalPrice"></b></p>
       <div class="modal-actions">
+        <div class="quantity-controls">
+          <button class="qty-btn qty-minus" onclick="changeModalQuantity(-1)">-</button>
+          <input type="number" class="qty-input" id="modal-qty" value="1" min="1" readonly>
+          <button class="qty-btn qty-plus" onclick="changeModalQuantity(1)">+</button>
+        </div>
         <button class="order-btn" id="modalOrder">Заказать</button>
       </div>
     </div>
@@ -120,6 +130,12 @@
       document.getElementById("modalDesc").textContent = desc;
       document.getElementById('modalPrice').textContent = price;   
 
+      // синхронизируем количество из карточки товара
+      const cardQty = document.getElementById('qty-' + id);
+      const modalQty = document.getElementById('modal-qty');
+      if (cardQty && modalQty) {
+        modalQty.value = cardQty.value;
+      }
 
       const modalOrder = document.getElementById('modalOrder');
       modalOrder.onclick = function () { orderProduct(id); };
@@ -137,31 +153,70 @@
       document.getElementById('modal').setAttribute('aria-hidden', 'true');
     }
 
-function orderProduct(id) {
-  const card = document.querySelector(`.card[data-id="${id}"]`);
-  if (!card) { alert('Неизвестный продукт'); return; }
+    // функции для управления количеством
+    function changeQuantity(productId, delta) {
+      const input = document.getElementById('qty-' + productId);
+      let currentValue = parseInt(input.value) || 1;
+      currentValue += delta;
+      if (currentValue < 1) currentValue = 1;
+      input.value = currentValue;
+    }
 
-  const dataToSend = {
-    product_id: card.dataset.id,
-    title: card.dataset.title,
-    price: card.dataset.price,
-    count: 1,
-    desc: card.dataset.desc,
-    link: 'https://www.mealty.ru/#sproduct_' + card.dataset.id
-  };
+    function changeModalQuantity(delta) {
+      const input = document.getElementById('modal-qty');
+      let currentValue = parseInt(input.value) || 1;
+      currentValue += delta;
+      if (currentValue < 1) currentValue = 1;
+      input.value = currentValue;
+    }
 
-  const json = JSON.stringify(dataToSend);
+    function orderProduct(id) {
+      const card = document.querySelector(`.card[data-id="${id}"]`);
+      if (!card) { alert('Неизвестный продукт'); return; }
 
-  if (tg && tg.sendData) {
-    tg.sendData(json); // отправляем JSON в бот
-  } else if (navigator.clipboard) {
-    navigator.clipboard.writeText(json)
-      .then(() => alert('Скопировано: ' + json))
-      .catch(() => alert(json));
-  } else {
-    alert(json);
-  }
-}
+      // определяем количество: из модального окна или из карточки
+      let count = 1;
+      const modal = document.getElementById('modal');
+      if (modal.style.display === 'flex') {
+        // заказ из модального окна
+        count = parseInt(document.getElementById('modal-qty').value) || 1;
+      } else {
+        // заказ из карточки
+        count = parseInt(document.getElementById('qty-' + id).value) || 1;
+      }
+
+      const dataToSend = {
+        product_id: card.dataset.id,
+        title: card.dataset.title,
+        price: card.dataset.price,
+        count: count,
+        desc: card.dataset.desc,
+        link: 'https://www.mealty.ru/#sproduct_' + card.dataset.id
+      };
+
+      // Логируем заказ в консоль
+      /*
+      console.log('Заказ товара:', {
+        название: dataToSend.title,
+        цена: dataToSend.price + ' руб.',
+        количество: dataToSend.count,
+        описание: dataToSend.desc,
+        ссылка: dataToSend.link
+      });
+      */
+
+      const json = JSON.stringify(dataToSend);
+
+      if (tg && tg.sendData) {
+        tg.sendData(json); // отправляем JSON в бот
+      } else if (navigator.clipboard) {
+        navigator.clipboard.writeText(json)
+          .then(() => alert('Скопировано: ' + json))
+          .catch(() => alert(json));
+      } else {
+        alert(json);
+      }
+    }
 
     
 
