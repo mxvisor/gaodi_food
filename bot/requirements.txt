@@ -1,2 +1,4 @@
 aiogram
 watchdog
+python-dotenv
+tinydb

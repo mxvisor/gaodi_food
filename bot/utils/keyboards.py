@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+from typing import Optional
+from enum import Enum
+
+from aiogram.types import (
+    ReplyKeyboardMarkup, KeyboardButton, WebAppInfo,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
+from aiogram.filters.callback_data import CallbackData
+
+from utils.commands import BotCommands
+import db.orders_db as db
+
+# Import from main bot file (will be set by bot.py)
+WEBAPP_URL = None
+
+def set_webapp_url(url):
+    global WEBAPP_URL
+    WEBAPP_URL = url
+
+
+# ========== ACTION ENUMS ==========
+
+# ========== CALLBACK DATA CLASSES ==========
+
+class OrderAction(CallbackData, prefix="order"):
+    class ActionType(Enum):
+        INCREASE = "increase"
+        DECREASE = "decrease"
+        CANCEL = "cancel"
+        DELETE_PAST = "deletepast"
+        DONE = "done"
+        DONE_PRODUCT = "done_product"
+
+    action: ActionType
+    product_id: int
+    user_id: int | None = None
+
+
+class UserAction(CallbackData, prefix="user"):
+    class ActionType(Enum):
+        RENAME = "rename"
+        LIST_USERS = "list_users"
+        ADD_USER = "add_user"
+        DEL_USER = "del_user"
+        RENAME_USER = "rename_user"
+        ADD_ADMIN = "add_admin"
+        REMOVE_ADMIN = "remove_admin"
+        LIST_ADMINS = "list_admins"
+        REMOVE_ADMIN_DIRECT = "remove_admin_direct"
+        SHOW_BLACKLIST = "show_blacklist"
+        ADD_TO_BLACKLIST = "add_to_blacklist"
+        REMOVE_FROM_BLACKLIST = "remove_from_blacklist"
+        DELETE = "delete"
+
+    action: ActionType
+    target_user_id: Optional[int] = None
+
+
+class PasswordAction(CallbackData, prefix="password"):
+    class ActionType(Enum):
+        CHANGE = "change"
+        DELETE = "delete"
+
+    action: ActionType
+
+
+class OrderTypeAction(CallbackData, prefix="ordertype"):
+    class OrderType(Enum):
+        CURRENT = "current"
+        PAST = "past"
+
+    order_type: OrderType
+
+
+class CollectionAction(CallbackData, prefix="collection"):
+    class ActionType(Enum):
+        NEW = "new"
+        CLOSE = "close"
+        OPEN = "open"
+
+    action: ActionType
+
+
+class OrdersViewAction(CallbackData, prefix="ordersview"):
+    class ActionType(Enum):
+        BY_USER = "by_user"
+        BY_PRODUCT = "by_product"
+
+    view_type: ActionType
+
+
+def get_main_keyboard_for(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
+    """Формирует главную клавиатуру для пользователя"""
+    base = []
+
+    # Add WebApp button only when WEBAPP_URL configured; otherwise, omit it gracefully
+    if WEBAPP_URL:
+        base.append([KeyboardButton(text=BotCommands.OPEN_WEBAPP.button_text, web_app=WebAppInfo(url=WEBAPP_URL))])
+
+    # Always include current/past order buttons
+    base.append([KeyboardButton(text=BotCommands.ORDERS_CURRENT.button_text), KeyboardButton(text=BotCommands.ORDERS_PAST.button_text)])
+
+    if user_id is not None and db.is_admin(user_id):
+        if db.is_collecting():
+            base.append([KeyboardButton(text=BotCommands.COLLECTION_CLOSE.button_text)])
+        else:
+            base.append([KeyboardButton(text=BotCommands.COLLECTION_NEW.button_text), 
+                         KeyboardButton(text=BotCommands.COLLECTION_OPEN.button_text)])
+
+        base.append([KeyboardButton(text=BotCommands.ADMIN_ORDERS_BY_USER.button_text), 
+                     KeyboardButton(text=BotCommands.ADMIN_ORDERS_BY_PRODUCT.button_text)])
+        base.append([KeyboardButton(text=BotCommands.ADMIN_HELP.button_text)])
+
+    return ReplyKeyboardMarkup(keyboard=base, resize_keyboard=True)
+
+def make_order_keyboard(owner_id: int, order: db.UserOrder, is_current: bool) -> Optional[InlineKeyboardMarkup]:
+    """Create an InlineKeyboardMarkup for an order or return None when no buttons should be shown.
+    Uses order.user_id when available (preferred), falling back to owner_id parameter.
+    """
+    if is_current and db.is_collecting():
+        buttons = [
+            InlineKeyboardButton(text="Увеличить ➕", callback_data=OrderAction(action=OrderAction.ActionType.INCREASE, product_id=order.product_id, user_id=order.user_id).pack())
+        ]
+        if order.count > 1:
+            buttons.append(InlineKeyboardButton(text="Уменьшить ➖", callback_data=OrderAction(action=OrderAction.ActionType.DECREASE, product_id=order.product_id, user_id=order.user_id).pack()))
+        buttons.append(InlineKeyboardButton(text="Отменить ❌", callback_data=OrderAction(action=OrderAction.ActionType.CANCEL, product_id=order.product_id, user_id=order.user_id).pack()))
+        return InlineKeyboardMarkup(inline_keyboard=[buttons])
+    if not is_current:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Удалить ❌", callback_data=OrderAction(action=OrderAction.ActionType.DELETE_PAST, product_id=order.product_id, user_id=order.user_id).pack())]
+        ])
+    return None
+
+def make_order_done_keyboard(user_id: int, product_id: int, is_done: bool) -> Optional[InlineKeyboardMarkup]:
+    """Create keyboard for marking individual order as done."""
+    if is_done:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Отметить выполненным ✅", callback_data=OrderAction(action=OrderAction.ActionType.DONE, product_id=product_id, user_id=user_id).pack())]
+    ])
+
+def make_product_done_keyboard(product_id: int, all_done: bool) -> Optional[InlineKeyboardMarkup]:
+    """Create keyboard for marking all orders of a product as done."""
+    if all_done:
+        return None
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Отметить все выполненными ✅", callback_data=OrderAction(action=OrderAction.ActionType.DONE_PRODUCT, product_id=product_id).pack())]
+    ])
+
+def make_user_management_keyboard(user_id: int, is_admin: bool) -> InlineKeyboardMarkup:
+    """Create keyboard for user management actions."""
+    admin_button_text = "Удалить из админов ❌" if is_admin else "Сделать админом ⭐"
+    admin_action = UserAction.ActionType.REMOVE_ADMIN if is_admin else UserAction.ActionType.ADD_ADMIN
+    
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Переименовать ✏️", callback_data=UserAction(action=UserAction.ActionType.RENAME, target_user_id=user_id).pack())],
+        [InlineKeyboardButton(text=admin_button_text, callback_data=UserAction(action=admin_action, target_user_id=user_id).pack())],
+        [InlineKeyboardButton(text="Удалить 🗑️", callback_data=UserAction(action=UserAction.ActionType.DELETE, target_user_id=user_id).pack())]
+    ])
+
+def make_password_menu(has_password: bool = False) -> InlineKeyboardMarkup:
+    """Create keyboard for password management."""
+    buttons = [[InlineKeyboardButton(text="Изменить пароль ✏️", callback_data=PasswordAction(action=PasswordAction.ActionType.CHANGE).pack())]]
+    
+    if has_password:
+        buttons.append([InlineKeyboardButton(text="Удалить пароль 🗑️", callback_data=PasswordAction(action=PasswordAction.ActionType.DELETE).pack())])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def make_users_management_menu() -> InlineKeyboardMarkup:
+    """Create main menu for user management."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Список пользователей", callback_data=UserAction(action=UserAction.ActionType.LIST_USERS).pack())],
+        [InlineKeyboardButton(text="Добавить пользователя", callback_data=UserAction(action=UserAction.ActionType.ADD_USER).pack())],
+        [InlineKeyboardButton(text="Удалить пользователя", callback_data=UserAction(action=UserAction.ActionType.DEL_USER).pack())],
+        [InlineKeyboardButton(text="Переименовать пользователя", callback_data=UserAction(action=UserAction.ActionType.RENAME_USER).pack())],
+        [InlineKeyboardButton(text="Список админов", callback_data=UserAction(action=UserAction.ActionType.LIST_ADMINS).pack())],
+        [InlineKeyboardButton(text="Сделать админом", callback_data=UserAction(action=UserAction.ActionType.ADD_ADMIN).pack())],
+        [InlineKeyboardButton(text="Убрать из админов", callback_data=UserAction(action=UserAction.ActionType.REMOVE_ADMIN).pack())],
+    ])
+
+
+def make_blacklist_management_menu() -> InlineKeyboardMarkup:
+    """Create menu for blacklist management."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Список заблокированных", callback_data=UserAction(action=UserAction.ActionType.SHOW_BLACKLIST).pack())],
+        [InlineKeyboardButton(text="Добавить в чёрный список", callback_data=UserAction(action=UserAction.ActionType.ADD_TO_BLACKLIST).pack())],
+        [InlineKeyboardButton(text="Убрать из чёрного списка", callback_data=UserAction(action=UserAction.ActionType.REMOVE_FROM_BLACKLIST).pack())],
+    ])
+
+
+def make_remove_from_blacklist_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Create keyboard with remove from blacklist button for a specific user."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Убрать из чёрного списка", callback_data=UserAction(action=UserAction.ActionType.REMOVE_FROM_BLACKLIST, target_user_id=user_id).pack())]
+    ])
+
+
+def make_remove_admin_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Create keyboard with remove admin button for a specific user."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Убрать из админов", callback_data=UserAction(action=UserAction.ActionType.REMOVE_ADMIN_DIRECT, target_user_id=user_id).pack())]
+    ])
+
+
+def make_order_type_selection_keyboard() -> InlineKeyboardMarkup:
+    """Create keyboard for selecting order type (current or past)."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Текущие заказы", callback_data=OrderTypeAction(order_type=OrderTypeAction.OrderType.CURRENT).pack())],
+        [InlineKeyboardButton(text="Прошлые заказы", callback_data=OrderTypeAction(order_type=OrderTypeAction.OrderType.PAST).pack())]
+    ])
+
+
+def make_collection_management_menu() -> InlineKeyboardMarkup:
+    """Create keyboard for collection management (start/stop collection)."""
+    buttons = []
+    if db.is_collecting():
+        buttons.append([InlineKeyboardButton(text="Закрыть сбор", callback_data=CollectionAction(action=CollectionAction.ActionType.CLOSE).pack())])
+    else:
+        buttons.append([InlineKeyboardButton(text="Новый сбор", callback_data=CollectionAction(action=CollectionAction.ActionType.NEW).pack()),
+                        InlineKeyboardButton(text="Открыть сбор", callback_data=CollectionAction(action=CollectionAction.ActionType.OPEN).pack())])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def make_orders_view_menu() -> InlineKeyboardMarkup:
+    """Create keyboard for selecting orders view type."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Все заказы по пользователям", callback_data=OrdersViewAction(view_type=OrdersViewAction.ActionType.BY_USER).pack())],
+        [InlineKeyboardButton(text="Все заказы по товарам", callback_data=OrdersViewAction(view_type=OrdersViewAction.ActionType.BY_PRODUCT).pack())]
+    ])
