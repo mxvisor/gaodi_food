@@ -4,13 +4,34 @@
 import logging
 from typing import Optional, List
 
-from aiogram import Router, types, F, Bot
+from aiogram import Router, types, F, Bot, exceptions
 from aiogram.filters import Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 
 from utils.commands import BotCommands, generate_admin_help, setup_admin_commands, reset_admin_commands
-from utils.keyboards import get_main_keyboard_for, make_order_done_keyboard, make_product_done_keyboard, OrderAction, UserAction, make_user_management_keyboard, make_password_menu, PasswordAction, make_users_management_menu, make_blacklist_management_menu, make_remove_from_blacklist_keyboard, make_remove_admin_keyboard, CollectionAction, make_collection_management_menu, OrdersViewAction, make_orders_view_menu
+from utils.keyboards import (
+    get_main_keyboard_for,
+    make_order_done_keyboard,
+    make_product_done_keyboard,
+    OrderAction,
+    UserAction,
+    make_user_management_keyboard,
+    make_password_menu,
+    PasswordAction,
+    make_users_management_menu,
+    make_blacklist_management_menu,
+    make_remove_from_blacklist_keyboard,
+    make_remove_admin_keyboard,
+    CollectionAction,
+    make_collection_management_menu,
+    OrdersViewAction,
+    make_orders_view_menu,
+    make_users_list_page,
+    UsersPageAction,
+    make_blacklist_list_page,
+    BlacklistPageAction,
+)
 from utils.filters import IsAdmin
 from db.orders_db import UserOrder, OrderSummary, User, Product
 from db import orders_db as db
@@ -75,14 +96,36 @@ def make_order_text_by_product(product: Product, orders: List[UserOrder]) -> tup
     users_text = "\n".join(user_lines)
 
     text = (
-        f"<b>{product.title}</b>\n"
-        f"Цена: <b>{ product.price} ₽</b>\n"
+        f"<b>{product.title} - {product.price} ₽</b>\n"
+        f"Всего заказано: <b>{total_count} шт.</b>\n"
         f"Ссылка: {product.link}\n"
-        f"Всего заказано: <b>{total_count} шт.</b>\n\n"
         f"Заказы пользователей:\n{users_text}"
     )
 
     return text, all_done
+
+
+def safe_can_edit(message: Optional[types.Message]) -> bool:
+    """Return True if we can safely call edit_text on this message object."""
+    return bool(message) and hasattr(message, "edit_text")
+
+
+async def safe_edit_text(message: Optional[types.Message], text: str, **kwargs):
+    """Try to edit a message; fall back to sending a new message if editing isn't available.
+
+    kwargs may include reply_markup, parse_mode etc.
+    """
+    if safe_can_edit(message):
+        try:
+            return await message.edit_text(text, **kwargs)
+        except Exception:
+            logging.exception("safe_edit_text: edit failed, fallback to answer")
+    if message and hasattr(message, "answer"):
+        try:
+            return await message.answer(text, **kwargs)
+        except Exception:
+            logging.exception("safe_edit_text: answer failed")
+    return None
 
 
 # ========== COLLECTION MANAGEMENT ==========
@@ -224,6 +267,10 @@ async def admin_help_handler(message: types.Message):
 async def mark_product_done_callback(callback: types.CallbackQuery, callback_data: OrderAction):
     """Отмечает все заказы конкретного товара как выполненные для всех пользователей"""
 
+    if db.is_collecting():
+        await callback.answer("Нельзя отмечать выполненными пока сбор заказов открыт", show_alert=True)
+        return
+
     updated_count = db.mark_product_done_for_all_users(callback_data.product_id)
 
     if callback.message and hasattr(callback.message, "edit_reply_markup"):
@@ -235,6 +282,10 @@ async def mark_product_done_callback(callback: types.CallbackQuery, callback_dat
 @admin_router.callback_query(OrderAction.filter(F.action == OrderAction.ActionType.DONE))
 async def mark_order_done_callback(callback: types.CallbackQuery, callback_data: OrderAction):
     """Отмечает конкретный заказ пользователя как выполненный"""
+
+    if db.is_collecting():
+        await callback.answer("Нельзя отмечать выполненными пока сбор заказов открыт", show_alert=True)
+        return
 
     owner_id = callback_data.user_id
     product_id = callback_data.product_id
@@ -262,9 +313,26 @@ async def mark_order_done_callback(callback: types.CallbackQuery, callback_data:
 
 @admin_router.message(Command(BotCommands.USERS_MENU.command), IsAdmin())
 async def list_users_cmd(message: types.Message):
-    """Показывает меню управления пользователями"""
+    """Сразу показывает список пользователей (стр. 1) с пагинацией и кнопкой Добавить."""
+    users = db.get_users()
+    if not users:
+        # Пустой список: показать кнопки Обновить и Добавить пользователя
+        add_row = [types.InlineKeyboardButton(text="Добавить пользователя", callback_data=UserAction(action=UserAction.ActionType.ADD_USER).pack())]
+        refresh_row = [types.InlineKeyboardButton(text="🔄 Обновить", callback_data=UsersPageAction(page=1).pack())]
+        empty_kb = types.InlineKeyboardMarkup(inline_keyboard=[add_row, refresh_row])
+        await message.answer("Пользователей пока нет.", reply_markup=empty_kb)
+        return
 
-    await message.answer("Управление пользователями:", reply_markup=make_users_management_menu())
+    # Админов показываем первыми
+    users_sorted = sorted(users, key=lambda u: (not u.is_admin, u.user_id))
+
+    kb = make_users_list_page(users_sorted, page=1)
+    # Добавляем кнопку под списком
+    add_row = [types.InlineKeyboardButton(text="Добавить пользователя", callback_data=UserAction(action=UserAction.ActionType.ADD_USER).pack())]
+    refresh_row = [types.InlineKeyboardButton(text="🔄 Обновить", callback_data=UsersPageAction(page=1).pack())]
+    full_kb = types.InlineKeyboardMarkup(inline_keyboard=kb.inline_keyboard + [add_row, refresh_row])
+
+    await message.answer("Список пользователей (стр. 1):", reply_markup=full_kb)
 
 @admin_router.callback_query(UserAction.filter(F.action == UserAction.ActionType.RENAME))
 async def rename_user_callback(callback: types.CallbackQuery, callback_data: UserAction, state: FSMContext):
@@ -311,21 +379,103 @@ async def process_new_name(message: types.Message, state: FSMContext):
 @admin_router.callback_query(UserAction.filter(F.action == UserAction.ActionType.LIST_USERS))
 async def list_users_callback(callback: types.CallbackQuery):
     """Показывает список всех пользователей с кнопками управления"""
-
     users = db.get_users()
     if not users:
-        await callback.message.answer("Пользователей пока нет.")
+        if callback.message:
+            add_row = [types.InlineKeyboardButton(text="Добавить пользователя", callback_data=UserAction(action=UserAction.ActionType.ADD_USER).pack())]
+            refresh_row = [types.InlineKeyboardButton(text="🔄 Обновить", callback_data=UsersPageAction(page=1).pack())]
+            empty_kb = types.InlineKeyboardMarkup(inline_keyboard=[add_row, refresh_row])
+            await callback.message.answer("Пользователей пока нет.", reply_markup=empty_kb)
         await callback.answer()
         return
 
-    await callback.message.answer("Список пользователей:")
-    for user in users:
-        keyboard = make_user_management_keyboard(user.user_id, user.is_admin)
-        status_icon = "⭐" if user.is_admin else "👤"
-        name = user.name or "Без имени"
-        text = f"{status_icon} {user.user_id}: {name}"
-        await callback.message.answer(text, reply_markup=keyboard, parse_mode=None)
+    # Админов показываем первыми
+    users_sorted = sorted(users, key=lambda u: (not u.is_admin, u.user_id))
 
+    kb = make_users_list_page(users_sorted, page=1)
+    if callback.message:
+        add_row = [types.InlineKeyboardButton(text="Добавить пользователя", callback_data=UserAction(action=UserAction.ActionType.ADD_USER).pack())]
+        refresh_row = [types.InlineKeyboardButton(text="🔄 Обновить", callback_data=UsersPageAction(page=1).pack())]
+        full_kb = types.InlineKeyboardMarkup(inline_keyboard=kb.inline_keyboard + [add_row, refresh_row])
+        await callback.message.answer("Список пользователей (стр. 1):", reply_markup=full_kb)
+    await callback.answer()
+
+@admin_router.callback_query(UsersPageAction.filter())
+async def paginate_users_callback(callback: types.CallbackQuery, callback_data: UsersPageAction):
+    """Обработка навигации по страницам списка пользователей."""
+    users = db.get_users()
+    page = callback_data.page
+    if not users:
+        if not callback.message:
+            await callback.answer()
+            return
+        try:
+            add_row = [types.InlineKeyboardButton(text="Добавить пользователя", callback_data=UserAction(action=UserAction.ActionType.ADD_USER).pack())]
+            refresh_row = [types.InlineKeyboardButton(text="🔄 Обновить", callback_data=UsersPageAction(page=1).pack())]
+            empty_kb = types.InlineKeyboardMarkup(inline_keyboard=[add_row, refresh_row])
+            await callback.message.edit_text("Пользователей пока нет.", reply_markup=empty_kb)
+        except Exception:
+            logging.exception("Failed to show empty users list on refresh")
+            try:
+                await callback.message.answer("Пользователей пока нет.", reply_markup=empty_kb)
+            except Exception:
+                logging.exception("Failed to send empty users list message")
+        await callback.answer()
+        return
+    # Админов показываем первыми
+    users_sorted = sorted(users, key=lambda u: (not u.is_admin, u.user_id))
+    kb = make_users_list_page(users_sorted, page=page)
+    if not callback.message:
+        await callback.answer()
+        return
+    try:
+        add_row = [types.InlineKeyboardButton(text="Добавить пользователя", callback_data=UserAction(action=UserAction.ActionType.ADD_USER).pack())]
+        refresh_row = [types.InlineKeyboardButton(text="🔄 Обновить", callback_data=UsersPageAction(page=page).pack())]
+        full_kb = types.InlineKeyboardMarkup(inline_keyboard=kb.inline_keyboard + [add_row, refresh_row])
+        await callback.message.edit_text(f"Список пользователей (стр. {page}):", reply_markup=full_kb)
+    except exceptions.TelegramBadRequest as e:
+        # Ignore harmless case when nothing changed
+        if "message is not modified" in str(e).lower():
+            pass
+        else:
+            logging.exception("Failed to edit users page message; sending new one")
+            try:
+                add_row = [types.InlineKeyboardButton(text="Добавить пользователя", callback_data=UserAction(action=UserAction.ActionType.ADD_USER).pack())]
+                refresh_row = [types.InlineKeyboardButton(text="🔄 Обновить", callback_data=UsersPageAction(page=page).pack())]
+                full_kb = types.InlineKeyboardMarkup(inline_keyboard=kb.inline_keyboard + [add_row, refresh_row])
+                await callback.message.answer(f"Список пользователей (стр. {page}):", reply_markup=full_kb)
+            except Exception:
+                logging.exception("Failed to send users page message")
+    except Exception:
+        logging.exception("Failed to edit users page message (unexpected)")
+        try:
+            add_row = [types.InlineKeyboardButton(text="Добавить пользователя", callback_data=UserAction(action=UserAction.ActionType.ADD_USER).pack())]
+            refresh_row = [types.InlineKeyboardButton(text="🔄 Обновить", callback_data=UsersPageAction(page=page).pack())]
+            full_kb = types.InlineKeyboardMarkup(inline_keyboard=kb.inline_keyboard + [add_row, refresh_row])
+            await callback.message.answer(f"Список пользователей (стр. {page}):", reply_markup=full_kb)
+        except Exception:
+            logging.exception("Failed to send users page message")
+    await callback.answer()
+
+@admin_router.callback_query(UserAction.filter(F.action == UserAction.ActionType.SHOW))
+async def show_user_manage_callback(callback: types.CallbackQuery, callback_data: UserAction):
+    """Показать управление для выбранного пользователя из списка."""
+    user_id = callback_data.target_user_id
+    if user_id is None:
+        await callback.answer("Не найден пользователь", show_alert=True)
+        return
+    user = db.get_user(user_id)
+    if not user:
+        await callback.answer("Пользователь не существует", show_alert=True)
+        return
+    kb = make_user_management_keyboard(user.user_id, user.is_admin)
+    status_icon = "⭐" if user.is_admin else "👤"
+    name = user.name or "Без имени"
+    if callback.message:
+        try:
+            await callback.message.answer(f"{status_icon} {user.user_id}: {name}", reply_markup=kb)
+        except Exception:
+            logging.exception("Failed to send user manage keyboard")
     await callback.answer()
 
 @admin_router.callback_query(UserAction.filter(F.action == UserAction.ActionType.ADD_USER))
@@ -452,26 +602,92 @@ async def remove_admin_direct_callback(callback: types.CallbackQuery, callback_d
 
 @admin_router.message(Command(BotCommands.BLACKLIST_MENU.command), IsAdmin())
 async def blacklist_cmd(message: types.Message):
-    """Показывает меню управления черным списком"""
-    await message.answer("Управление чёрным списком:", reply_markup=make_blacklist_management_menu())
+    """Сразу показывает чёрный список (страница 1) с пагинацией и кнопкой добавления."""
+    bl = db.get_blacklist()
+    if not bl:
+        add_row = [types.InlineKeyboardButton(text="Добавить в чёрный список", callback_data=UserAction(action=UserAction.ActionType.ADD_TO_BLACKLIST, target_user_id=None).pack())]
+        refresh_row = [types.InlineKeyboardButton(text="🔄 Обновить", callback_data=BlacklistPageAction(page=1).pack())]
+        empty_kb = types.InlineKeyboardMarkup(inline_keyboard=[add_row, refresh_row])
+        await message.answer("Чёрный список пуст.", reply_markup=empty_kb)
+        return
+    kb = make_blacklist_list_page(bl, page=1)
+    add_row = [types.InlineKeyboardButton(text="Добавить в чёрный список", callback_data=UserAction(action=UserAction.ActionType.ADD_TO_BLACKLIST, target_user_id=None).pack())]
+    refresh_row = [types.InlineKeyboardButton(text="🔄 Обновить", callback_data=BlacklistPageAction(page=1).pack())]
+    full_kb = types.InlineKeyboardMarkup(inline_keyboard=kb.inline_keyboard + [add_row, refresh_row])
+    await message.answer("Чёрный список (стр. 1):", reply_markup=full_kb)
 
 @admin_router.callback_query(UserAction.filter(F.action == UserAction.ActionType.SHOW_BLACKLIST))
 async def show_blacklist_callback(callback: types.CallbackQuery):
-    """Показывает текущий черный список пользователей"""
-
+    """Показывает чёрный список (страница 1) с пагинацией."""
     bl = db.get_blacklist()
     if not bl:
-        await callback.message.answer("Чёрный список пуст.")
+        if callback.message:
+            add_row = [types.InlineKeyboardButton(text="Добавить в чёрный список", callback_data=UserAction(action=UserAction.ActionType.ADD_TO_BLACKLIST, target_user_id=None).pack())]
+            refresh_row = [types.InlineKeyboardButton(text="🔄 Обновить", callback_data=BlacklistPageAction(page=1).pack())]
+            empty_kb = types.InlineKeyboardMarkup(inline_keyboard=[add_row, refresh_row])
+            await callback.message.answer("Чёрный список пуст.", reply_markup=empty_kb)
         await callback.answer()
         return
+    kb = make_blacklist_list_page(bl, page=1)
+    add_row = [types.InlineKeyboardButton(text="Добавить в чёрный список", callback_data=UserAction(action=UserAction.ActionType.ADD_TO_BLACKLIST, target_user_id=None).pack())]
+    refresh_row = [types.InlineKeyboardButton(text="🔄 Обновить", callback_data=BlacklistPageAction(page=1).pack())]
+    full_kb = types.InlineKeyboardMarkup(inline_keyboard=kb.inline_keyboard + [add_row, refresh_row])
+    if callback.message:
+        await callback.message.answer("Чёрный список (стр. 1):", reply_markup=full_kb)
+    await callback.answer()
 
-    await callback.message.answer("Чёрный список:")
-    for user_id in bl:
-        name = db.get_username(user_id) or "Без имени"
-        keyboard = make_remove_from_blacklist_keyboard(user_id)
-        text = f"{user_id} — {name}"
-        await callback.message.answer(text, reply_markup=keyboard, parse_mode=None)
-
+@admin_router.callback_query(BlacklistPageAction.filter())
+async def paginate_blacklist_callback(callback: types.CallbackQuery, callback_data: BlacklistPageAction):
+    """Обработка навигации по страницам чёрного списка."""
+    bl = db.get_blacklist()
+    page = callback_data.page
+    if not callback.message:
+        await callback.answer()
+        return
+    if not bl:
+        try:
+            add_row = [types.InlineKeyboardButton(text="Добавить в чёрный список", callback_data=UserAction(action=UserAction.ActionType.ADD_TO_BLACKLIST, target_user_id=None).pack())]
+            refresh_row = [types.InlineKeyboardButton(text="🔄 Обновить", callback_data=BlacklistPageAction(page=page).pack())]
+            empty_kb = types.InlineKeyboardMarkup(inline_keyboard=[add_row, refresh_row])
+            await callback.message.edit_text("Чёрный список пуст.", reply_markup=empty_kb)
+        except exceptions.TelegramBadRequest as e:
+            if "message is not modified" in str(e).lower():
+                pass
+            else:
+                logging.exception("Failed to show empty blacklist")
+                try:
+                    await callback.message.answer("Чёрный список пуст.", reply_markup=empty_kb)
+                except Exception:
+                    logging.exception("Failed to send empty blacklist message")
+        except Exception:
+            logging.exception("Failed to show empty blacklist (unexpected)")
+            try:
+                await callback.message.answer("Чёрный список пуст.", reply_markup=empty_kb)
+            except Exception:
+                logging.exception("Failed to send empty blacklist message")
+        await callback.answer()
+        return
+    kb = make_blacklist_list_page(bl, page=page)
+    add_row = [types.InlineKeyboardButton(text="Добавить в чёрный список", callback_data=UserAction(action=UserAction.ActionType.ADD_TO_BLACKLIST, target_user_id=None).pack())]
+    refresh_row = [types.InlineKeyboardButton(text="🔄 Обновить", callback_data=BlacklistPageAction(page=page).pack())]
+    full_kb = types.InlineKeyboardMarkup(inline_keyboard=kb.inline_keyboard + [add_row, refresh_row])
+    try:
+        await callback.message.edit_text(f"Чёрный список (стр. {page}):", reply_markup=full_kb)
+    except exceptions.TelegramBadRequest as e:
+        if "message is not modified" in str(e).lower():
+            pass
+        else:
+            logging.exception("Failed to edit blacklist page; sending new message")
+            try:
+                await callback.message.answer(f"Чёрный список (стр. {page}):", reply_markup=full_kb)
+            except Exception:
+                logging.exception("Failed to send blacklist page message")
+    except Exception:
+        logging.exception("Failed to edit blacklist page (unexpected)")
+        try:
+            await callback.message.answer(f"Чёрный список (стр. {page}):", reply_markup=full_kb)
+        except Exception:
+            logging.exception("Failed to send blacklist page message")
     await callback.answer()
 
 @admin_router.callback_query(UserAction.filter(F.action == UserAction.ActionType.ADD_TO_BLACKLIST))
@@ -497,6 +713,19 @@ async def remove_from_blacklist_callback(callback: types.CallbackQuery, callback
     else:
         await state.set_state(AdminStates.waiting_for_user_id_remove_from_blacklist)
         await callback.message.answer("Введите ID пользователя, которого хотите удалить из чёрного списка:")
+    await callback.answer()
+
+@admin_router.callback_query(UserAction.filter(F.action == UserAction.ActionType.SHOW_BLACKLIST_USER))
+async def show_blacklisted_user_callback(callback: types.CallbackQuery, callback_data: UserAction):
+    """Показывает карточку конкретного пользователя из чёрного списка с кнопкой удаления."""
+    uid = callback_data.target_user_id
+    if uid is None:
+        await callback.answer("ID не найден", show_alert=True)
+        return
+    name = db.get_username(uid) or "Без имени"
+    kb = make_remove_from_blacklist_keyboard(uid)
+    if callback.message:
+        await callback.message.answer(f"🚫 {uid}: {name}", reply_markup=kb)
     await callback.answer()
 
 @admin_router.message(AdminStates.waiting_for_user_id_add_to_blacklist, IsAdmin())

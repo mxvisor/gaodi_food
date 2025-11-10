@@ -58,6 +58,9 @@ async def safe_start_polling(dp, bot, retries=5, delay=10):
             attempt += 1
             logging.warning(f"Network error: {e}. Попытка {attempt}/{retries} через {delay}s")
             await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            # Propagate cancellation so shutdown can proceed cleanly
+            raise
         except Exception as e:
             logging.exception(f"Неожиданная ошибка: {e}")
             await asyncio.sleep(delay)
@@ -66,25 +69,29 @@ async def safe_start_polling(dp, bot, retries=5, delay=10):
 
 async def main():
     try:
+        logging.info("Bot preparing...")        
         # load data into memory
         load_data()
         # ensure initial admin
         ensure_initial_admin(BOT_OWNER)
-        # setup bot commands
-        await setup_bot_commands(bot)
-        # setup admin commands for all existing admins
-        for user in get_users():
-            if user.is_admin:
-                await setup_admin_commands(bot, user.user_id)
-        # start autosave loop
-        asyncio.create_task(autosave_loop())
-        logging.info("Bot starting...")
-        await safe_start_polling(dp, bot)
+        # Use bot as async context manager to ensure HTTP session closes on shutdown
+        async with bot:
+            # setup bot commands
+            await setup_bot_commands(bot)
+            # setup admin commands for all existing admins
+            for user in get_users():
+                if user.is_admin:
+                    await setup_admin_commands(bot, user.user_id)
+            # start autosave loop
+            asyncio.create_task(autosave_loop())
+            logging.info("Bot starting...")
+            await safe_start_polling(dp, bot)
     except KeyboardInterrupt:
         logging.info("Bot stopped by user")
-        save_data(force=True)
     except Exception as e:
         logging.exception(f"Unexpected error: {e}")
+    finally:
+        # Always persist data even on interruptions or errors
         save_data(force=True)
 
 if __name__ == "__main__":

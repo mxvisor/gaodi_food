@@ -42,6 +42,7 @@ class OrderAction(CallbackData, prefix="order"):
 class UserAction(CallbackData, prefix="user"):
     class ActionType(Enum):
         RENAME = "rename"
+        SHOW = "show"
         LIST_USERS = "list_users"
         ADD_USER = "add_user"
         DEL_USER = "del_user"
@@ -51,6 +52,7 @@ class UserAction(CallbackData, prefix="user"):
         LIST_ADMINS = "list_admins"
         REMOVE_ADMIN_DIRECT = "remove_admin_direct"
         SHOW_BLACKLIST = "show_blacklist"
+        SHOW_BLACKLIST_USER = "show_blacklist_user"
         ADD_TO_BLACKLIST = "add_to_blacklist"
         REMOVE_FROM_BLACKLIST = "remove_from_blacklist"
         DELETE = "delete"
@@ -92,6 +94,16 @@ class OrdersViewAction(CallbackData, prefix="ordersview"):
     view_type: ActionType
 
 
+class UsersPageAction(CallbackData, prefix="userspage"):
+    """Callback data for users list pagination."""
+    page: int
+
+
+class BlacklistPageAction(CallbackData, prefix="blpage"):
+    """Callback data for blacklist pagination."""
+    page: int
+
+
 def get_main_keyboard_for(user_id: Optional[int] = None) -> ReplyKeyboardMarkup:
     """Формирует главную клавиатуру для пользователя"""
     base = []
@@ -120,7 +132,7 @@ def make_order_keyboard(owner_id: int, order: db.UserOrder, is_current: bool) ->
     """Create an InlineKeyboardMarkup for an order or return None when no buttons should be shown.
     Uses order.user_id when available (preferred), falling back to owner_id parameter.
     """
-    if is_current and db.is_collecting():
+    if is_current and db.is_collecting() and not order.done:
         buttons = [
             InlineKeyboardButton(text="Увеличить ➕", callback_data=OrderAction(action=OrderAction.ActionType.INCREASE, product_id=order.product_id, user_id=order.user_id).pack())
         ]
@@ -182,6 +194,81 @@ def make_users_management_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Сделать админом", callback_data=UserAction(action=UserAction.ActionType.ADD_ADMIN).pack())],
         [InlineKeyboardButton(text="Убрать из админов", callback_data=UserAction(action=UserAction.ActionType.REMOVE_ADMIN).pack())],
     ])
+
+
+def make_users_list_page(users: list[db.User], page: int, page_size: int = 10) -> InlineKeyboardMarkup:
+    """Build paginated inline keyboard with users as buttons and ◀️/▶️ navigation.
+    Each user button opens per-user management via UserAction.SHOW.
+    """
+    total = len(users)
+    max_page = max(1, (total + page_size - 1) // page_size)
+    page = max(1, min(page, max_page))
+
+    start = (page - 1) * page_size
+    end = min(start + page_size, total)
+
+    rows: list[list[InlineKeyboardButton]] = []
+    for u in users[start:end]:
+        status_icon = "⭐" if getattr(u, "is_admin", False) else "👤"
+        name = (u.name or "Без имени") if hasattr(u, "name") else ""
+        text = f"{status_icon} {u.user_id}: {name}"
+        rows.append([
+            InlineKeyboardButton(
+                text=text,
+                callback_data=UserAction(action=UserAction.ActionType.SHOW, target_user_id=u.user_id).pack(),
+            )
+        ])
+
+    # Navigation row
+    nav: list[InlineKeyboardButton] = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=UsersPageAction(page=page - 1).pack()))
+    if page < max_page:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=UsersPageAction(page=page + 1).pack()))
+    if nav:
+        rows.append(nav)
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def make_blacklist_list_page(user_ids: list[int], page: int, page_size: int = 10) -> InlineKeyboardMarkup:
+    """Build paginated inline keyboard for blacklist with remove buttons and navigation."""
+    total = len(user_ids)
+    max_page = max(1, (total + page_size - 1) // page_size)
+    page = max(1, min(page, max_page))
+
+    start = (page - 1) * page_size
+    end = min(start + page_size, total)
+
+    rows: list[list[InlineKeyboardButton]] = []
+    # Sort by name if available, else by user_id
+    slice_ids = user_ids[:]
+    # we'll only sort the full list before slicing to ensure stable pages
+    def sort_key(uid: int):
+        u = db.get_user(uid)
+        return ((u.name or "") if u else "", uid)
+    slice_ids.sort(key=sort_key)
+    for uid in slice_ids[start:end]:
+        u = db.get_user(uid)
+        name = (u.name if u and u.name else "Без имени")
+        text = f"🚫 {uid}: {name}"
+        rows.append([
+            InlineKeyboardButton(
+                text=text,
+                callback_data=UserAction(action=UserAction.ActionType.SHOW_BLACKLIST_USER, target_user_id=uid).pack(),
+            )
+        ])
+
+    # Navigation row
+    nav: list[InlineKeyboardButton] = []
+    if page > 1:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=BlacklistPageAction(page=page - 1).pack()))
+    if page < max_page:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=BlacklistPageAction(page=page + 1).pack()))
+    if nav:
+        rows.append(nav)
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def make_blacklist_management_menu() -> InlineKeyboardMarkup:

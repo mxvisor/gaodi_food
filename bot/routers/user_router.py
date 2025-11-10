@@ -42,7 +42,7 @@ def make_order_text(order: UserOrder, is_current: bool) -> str:
     price = product.price if product else 0
     link = product.link if product else ""
     text = (
-        f"<b>{name}</b> — заказ:\n"
+        f"<b>{name}</b>\n"
         f"{title} - <b>{price} ₽</b>\n"
         f"Количество: <b>{order.count}</b>\n"
         f"Ссылка: {link}\n"
@@ -149,7 +149,7 @@ async def password_handler(message: types.Message, state: FSMContext):
 
     if entered == pwd:
         # success
-        db.set_username(user_id, name)
+        db.add_user(user_id, name)
         db.reg_reset_attempts(user_id)
         await message.answer(f"✅ Регистрация успешна. Приятно познакомиться, {name}!", reply_markup=get_main_keyboard_for(user_id))
         await state.clear()
@@ -322,6 +322,10 @@ async def change_order_count_callback(callback: types.CallbackQuery, callback_da
     order = db.get_user_order(owner_id, product_id, is_current=True)
     if order is None:
         await callback.answer("Заказ не найден", show_alert=True)
+        return
+    
+    if order.done:
+        await callback.answer("Нельзя изменять выполненный заказ", show_alert=True)
         return
     
     is_increase = action == OrderAction.ActionType.INCREASE

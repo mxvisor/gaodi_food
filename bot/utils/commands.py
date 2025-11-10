@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 
 import logging
+import asyncio  # may still be used elsewhere; safe to keep
+from aiogram import exceptions
 from enum import Enum
 
 
@@ -97,7 +99,7 @@ def get_admin_commands() -> list['BotCommands']:
         BotCommands.USERS_MENU,
         BotCommands.PASSWORD_MENU,
         BotCommands.BLACKLIST_MENU,
-        BotCommands.COLLECTION_MENU,
+        BotCommands.COLLECTION_MENU,     
         BotCommands.ADMIN_HELP,
     ]
 
@@ -139,9 +141,10 @@ def generate_user_help() -> str:
     help_text += "После выбора товара в WebApp нажмите «Заказать» — бот получит данные о товаре.\n\n"
     
     help_text += "Команды для пользователя:\n"
-    help_text += f"/{BotCommands.ORDERS_CURRENT.command} — {BotCommands.ORDERS_CURRENT.description}\n"
-    help_text += f"/{BotCommands.ORDERS_PAST.command} — {BotCommands.ORDERS_PAST.description}\n"
-    help_text += f"/{BotCommands.ORDERS_MENU.command} — {BotCommands.ORDERS_MENU.description}\n\n"
+    for cmd in get_user_commands():
+        if cmd.command:  # только команды с непустым command
+            help_text += f"/{cmd.command} — {cmd.description}\n"
+    help_text += "\n"
     
     help_text += "Примечания:\n"
     help_text += "- При регистрации у вас есть 3 попытки ввести пароль. После 3 неверных попыток вы автоматически попадёте в чёрный список.\n"
@@ -155,24 +158,11 @@ def generate_admin_help() -> str:
     """Generate admin help text from commands enum."""
     help_text = "📕 Помощь — администратор:\n\n"
     
-    help_text += "🔹 Управление сбором заказов:\n"
-    help_text += f"/{BotCommands.COLLECTION_NEW.command} — {BotCommands.COLLECTION_NEW.description}\n"
-    help_text += f"/{BotCommands.COLLECTION_CLOSE.command} — {BotCommands.COLLECTION_CLOSE.description}\n"
-    help_text += f"/{BotCommands.COLLECTION_MENU.command} — {BotCommands.COLLECTION_MENU.description}\n\n"
-    
-    help_text += "🔹 Просмотр заказов:\n"
-    help_text += f"/{BotCommands.ADMIN_ORDERS_MENU.command} — {BotCommands.ADMIN_ORDERS_MENU.description}\n"
-    help_text += f"/{BotCommands.ADMIN_ORDERS_BY_USER.command} — {BotCommands.ADMIN_ORDERS_BY_USER.description}\n"
-    help_text += f"/{BotCommands.ADMIN_ORDERS_BY_PRODUCT.command} — {BotCommands.ADMIN_ORDERS_BY_PRODUCT.description}\n\n"
-    
-    help_text += "🔹 Управление пользователями:\n"
-    help_text += f"/{BotCommands.USERS_MENU.command} — {BotCommands.USERS_MENU.description}\n\n"
-    
-    help_text += "🔹 Управление паролем:\n"
-    help_text += f"/{BotCommands.PASSWORD_MENU.command} — {BotCommands.PASSWORD_MENU.description}\n\n"
-    
-    help_text += "🔹 Чёрный список:\n"
-    help_text += f"/{BotCommands.BLACKLIST_MENU.command} — {BotCommands.BLACKLIST_MENU.description}\n\n"
+    help_text += "Команды для администратора:\n"
+    for cmd in get_admin_commands():
+        if cmd.command:  # только команды с непустым command
+            help_text += f"/{cmd.command} — {cmd.description}\n"
+    help_text += "\n"
     
     help_text += "Примечания:\n"
     help_text += "- После выполнения команды все данные автоматически сохраняются."
@@ -199,9 +189,12 @@ async def setup_bot_commands(bot):
         if cmd.command  # только команды с непустым command
     ]
     
-    # Устанавливаем команды для всех пользователей по умолчанию
-    await bot.set_my_commands(user_commands_list, scope=BotCommandScopeDefault())
-    logging.info(f"Set {len(user_commands_list)} user commands")
+    # Однократная установка команд для всех пользователей
+    try:
+        await bot.set_my_commands(user_commands_list, scope=BotCommandScopeDefault())
+        logging.info(f"Set {len(user_commands_list)} user commands")
+    except Exception as e:
+        logging.error(f"Failed to set global user commands: {e.__class__.__name__}: {e}")
 
 
 # Track which admins have had their commands set
@@ -250,11 +243,29 @@ async def setup_admin_commands(bot, admin_id: int):
         ]
         
         # Устанавливаем команды только для этого чата (администратора)
-        await bot.set_my_commands(
-            admin_commands_list,
-            scope=BotCommandScopeChat(chat_id=admin_id)
-        )
-        _admins_with_commands.add(admin_id)
-        logging.info(f"Set {len(admin_commands_list)} admin commands for user {admin_id}")
+        # Проверяем существование приватного чата. Если бот не "видел" пользователя — пропускаем.
+        try:
+            await bot.get_chat(admin_id)
+        except exceptions.TelegramBadRequest as e:
+            if "chat not found" in str(e).lower():
+                # Тихо пропускаем фиктивного / неактивного пользователя
+                logging.debug(f"Skip setting admin commands for inactive user {admin_id} (chat not found)")
+                return
+            # Другие ошибки — логируем warning
+            logging.warning(f"get_chat failed for admin {admin_id}: {e.__class__.__name__}: {e}")
+            return
+        except Exception as e:
+            logging.warning(f"Unexpected error during get_chat for {admin_id}: {e.__class__.__name__}: {e}")
+            return
+
+        try:
+            await bot.set_my_commands(
+                admin_commands_list,
+                scope=BotCommandScopeChat(chat_id=admin_id)
+            )
+            _admins_with_commands.add(admin_id)
+            logging.info(f"Set {len(admin_commands_list)} admin commands for user {admin_id}")
+        except Exception as e:
+            logging.error(f"Failed to set admin commands for {admin_id}: {e.__class__.__name__}: {e}")
     except Exception as e:
-        logging.error(f"Failed to set admin commands for {admin_id}: {e}")
+        logging.error(f"Unexpected error building admin commands list for {admin_id}: {e.__class__.__name__}: {e}")
