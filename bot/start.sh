@@ -24,7 +24,7 @@ done)
 
 if [ -n "$MISSING" ]; then
     echo -e "Missing or outdated packages:\n$MISSING\nInstalling required packages..."
-#    pip install -r requirements.txt || { echo "❌ Failed to install dependencies"; exit 1; }
+    pip install -r requirements.txt || { echo "❌ Failed to install dependencies"; exit 1; }
 else
     echo "All packages are already installed."
 fi
