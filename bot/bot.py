@@ -11,38 +11,26 @@ from aiogram.enums import ParseMode
 logging.basicConfig(level=logging.INFO)
 
 # ========== CONFIG ==========
-from utils.config import BOT_TOKEN, WEBAPP_URL, BOT_OWNER
+from utils.config import BOT_TOKEN, BOT_OWNER
 
 # ========== DATABASE IMPORTS ==========
-from db.orders_db import load_data, save_data, ensure_initial_admin, get_users
-from db.autosave import autosave_loop
+import db.orders_db as db
+import db.autosave as db_auto
 
 # ========== ROUTERS ==========
-from routers.user_router import user_router
 from routers.admin_router import admin_router
-from utils.keyboards import set_webapp_url
+from routers.admin_users_router import admin_users_router
+from routers.admin_blacklist_router import admin_blacklist_router
+from routers.admin_password_router import admin_password_router
+from routers.admin_orders_router import admin_orders_router
+from routers.user_orders_router import user_orders_router
+from routers.registration_router import registration_router
+
 
 # ========== COMMANDS ==========
 from utils.commands import setup_bot_commands, setup_admin_commands
 
-# ========== BOT SETUP ==========
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(
-        parse_mode=ParseMode.HTML,
-        link_preview_is_disabled=True,  
-    ),
-)
-dp = Dispatcher()
-
-# Include routers
-dp.include_router(user_router)
-dp.include_router(admin_router)
-
-set_webapp_url(WEBAPP_URL)
-
 # ========== START ==========
-
 async def safe_start_polling(dp, bot, retries=5, delay=10):
     """
     Запускаем polling с обработкой ошибок сети.
@@ -60,7 +48,7 @@ async def safe_start_polling(dp, bot, retries=5, delay=10):
             await asyncio.sleep(delay)
         except asyncio.CancelledError:
             # Propagate cancellation so shutdown can proceed cleanly
-            raise
+            break
         except Exception as e:
             logging.exception(f"Неожиданная ошибка: {e}")
             await asyncio.sleep(delay)
@@ -71,19 +59,37 @@ async def main():
     try:
         logging.info("Bot preparing...")        
         # load data into memory
-        load_data()
+        db.load_data()
         # ensure initial admin
-        ensure_initial_admin(BOT_OWNER)
+        db.ensure_initial_admin()
+         # bot setup
+        bot = Bot(
+            token=BOT_TOKEN,
+            default=DefaultBotProperties(
+                parse_mode=ParseMode.HTML,
+                link_preview_is_disabled=True,  
+            ),
+        )
+        dp = Dispatcher()
+        # Include routers
+        dp.include_router(admin_router)
+        dp.include_router(admin_users_router)
+        dp.include_router(admin_blacklist_router)
+        dp.include_router(admin_password_router)
+        dp.include_router(admin_orders_router)
+        dp.include_router(user_orders_router)
+        dp.include_router(registration_router)
+
         # Use bot as async context manager to ensure HTTP session closes on shutdown
         async with bot:
             # setup bot commands
             await setup_bot_commands(bot)
             # setup admin commands for all existing admins
-            for user in get_users():
+            for user in db.get_users():
                 if user.is_admin:
                     await setup_admin_commands(bot, user.user_id)
             # start autosave loop
-            asyncio.create_task(autosave_loop())
+            asyncio.create_task(db_auto.autosave_loop())
             logging.info("Bot starting...")
             await safe_start_polling(dp, bot)
     except KeyboardInterrupt:
@@ -92,7 +98,7 @@ async def main():
         logging.exception(f"Unexpected error: {e}")
     finally:
         # Always persist data even on interruptions or errors
-        save_data(force=True)
+        db.save_data(force=True)
 
 if __name__ == "__main__":
     asyncio.run(main())

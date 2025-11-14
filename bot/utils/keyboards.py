@@ -13,15 +13,7 @@ from aiogram.filters.callback_data import CallbackData
 from utils.commands import BotCommands
 import db.orders_db as db
 
-# Import from main bot file (will be set by bot.py)
-WEBAPP_URL = None
-
-def set_webapp_url(url):
-    global WEBAPP_URL
-    WEBAPP_URL = url
-
-
-# ========== ACTION ENUMS ==========
+from utils.config import WEBAPP_URL
 
 # ========== CALLBACK DATA CLASSES ==========
 
@@ -43,16 +35,10 @@ class UserAction(CallbackData, prefix="user"):
     class ActionType(Enum):
         RENAME = "rename"
         SHOW = "show"
-        LIST_USERS = "list_users"
         ADD_USER = "add_user"
-        DEL_USER = "del_user"
-        RENAME_USER = "rename_user"
-        ADD_ADMIN = "add_admin"
-        REMOVE_ADMIN = "remove_admin"
-        LIST_ADMINS = "list_admins"
-        REMOVE_ADMIN_DIRECT = "remove_admin_direct"
-        SHOW_BLACKLIST = "show_blacklist"
-        SHOW_BLACKLIST_USER = "show_blacklist_user"
+        ADD_TO_ADMINS = "add_admin"
+        REMOVE_FROM_ADMINS = "remove_admin"
+        SHOW_BLACKLISTED_USER = "show_blacklist_user"
         ADD_TO_BLACKLIST = "add_to_blacklist"
         REMOVE_FROM_BLACKLIST = "remove_from_blacklist"
         DELETE = "delete"
@@ -148,6 +134,8 @@ def make_order_keyboard(owner_id: int, order: db.UserOrder, is_current: bool) ->
 
 def make_order_done_keyboard(user_id: int, product_id: int, is_done: bool) -> Optional[InlineKeyboardMarkup]:
     """Create keyboard for marking individual order as done."""
+    if db.is_collecting():
+        return None
     if is_done:
         return None
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -156,6 +144,8 @@ def make_order_done_keyboard(user_id: int, product_id: int, is_done: bool) -> Op
 
 def make_product_done_keyboard(product_id: int, all_done: bool) -> Optional[InlineKeyboardMarkup]:
     """Create keyboard for marking all orders of a product as done."""
+    if db.is_collecting():
+        return None
     if all_done:
         return None
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -165,7 +155,7 @@ def make_product_done_keyboard(product_id: int, all_done: bool) -> Optional[Inli
 def make_user_management_keyboard(user_id: int, is_admin: bool) -> InlineKeyboardMarkup:
     """Create keyboard for user management actions."""
     admin_button_text = "Удалить из админов ❌" if is_admin else "Сделать админом ⭐"
-    admin_action = UserAction.ActionType.REMOVE_ADMIN if is_admin else UserAction.ActionType.ADD_ADMIN
+    admin_action = UserAction.ActionType.REMOVE_FROM_ADMINS if is_admin else UserAction.ActionType.ADD_TO_ADMINS
     
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Переименовать ✏️", callback_data=UserAction(action=UserAction.ActionType.RENAME, target_user_id=user_id).pack())],
@@ -173,7 +163,7 @@ def make_user_management_keyboard(user_id: int, is_admin: bool) -> InlineKeyboar
         [InlineKeyboardButton(text="Удалить 🗑️", callback_data=UserAction(action=UserAction.ActionType.DELETE, target_user_id=user_id).pack())]
     ])
 
-def make_password_menu(has_password: bool = False) -> InlineKeyboardMarkup:
+def make_password_management_keyboard(has_password: bool = False) -> InlineKeyboardMarkup:
     """Create keyboard for password management."""
     buttons = [[InlineKeyboardButton(text="Изменить пароль ✏️", callback_data=PasswordAction(action=PasswordAction.ActionType.CHANGE).pack())]]
     
@@ -183,17 +173,11 @@ def make_password_menu(has_password: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def make_users_management_menu() -> InlineKeyboardMarkup:
-    """Create main menu for user management."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Список пользователей", callback_data=UserAction(action=UserAction.ActionType.LIST_USERS).pack())],
-        [InlineKeyboardButton(text="Добавить пользователя", callback_data=UserAction(action=UserAction.ActionType.ADD_USER).pack())],
-        [InlineKeyboardButton(text="Удалить пользователя", callback_data=UserAction(action=UserAction.ActionType.DEL_USER).pack())],
-        [InlineKeyboardButton(text="Переименовать пользователя", callback_data=UserAction(action=UserAction.ActionType.RENAME_USER).pack())],
-        [InlineKeyboardButton(text="Список админов", callback_data=UserAction(action=UserAction.ActionType.LIST_ADMINS).pack())],
-        [InlineKeyboardButton(text="Сделать админом", callback_data=UserAction(action=UserAction.ActionType.ADD_ADMIN).pack())],
-        [InlineKeyboardButton(text="Убрать из админов", callback_data=UserAction(action=UserAction.ActionType.REMOVE_ADMIN).pack())],
-    ])
+# Removed obsolete make_users_management_menu (unused)
+
+
+
+
 
 
 def make_users_list_page(users: list[db.User], page: int, page_size: int = 10) -> InlineKeyboardMarkup:
@@ -231,6 +215,31 @@ def make_users_list_page(users: list[db.User], page: int, page_size: int = 10) -
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def make_users_list_with_menu_keyboard(users: list[db.User], page: int) -> InlineKeyboardMarkup:
+    """Unified builder returning display text and keyboard for users list or empty state.
+    """
+    menu_kb = make_users_menu_keyboard(page=page)
+
+    if not users:
+        return menu_kb
+
+    list_kb = make_users_list_page(users, page=page)
+    list_kb.inline_keyboard.extend(menu_kb.inline_keyboard)
+    return list_kb
+
+
+
+def make_users_menu_keyboard(page: int = 1) -> InlineKeyboardMarkup:
+    """Create keyboard with add user and refresh buttons for users list."""
+    add_row = [InlineKeyboardButton(text="Добавить пользователя", callback_data=UserAction(action=UserAction.ActionType.ADD_USER).pack())]
+    refresh_row = [InlineKeyboardButton(text="🔄 Обновить", callback_data=UsersPageAction(page=page).pack())]
+    return InlineKeyboardMarkup(inline_keyboard=[add_row, refresh_row])
+
+
+
+
+
+
 def make_blacklist_list_page(user_ids: list[int], page: int, page_size: int = 10) -> InlineKeyboardMarkup:
     """Build paginated inline keyboard for blacklist with remove buttons and navigation."""
     total = len(user_ids)
@@ -255,7 +264,7 @@ def make_blacklist_list_page(user_ids: list[int], page: int, page_size: int = 10
         rows.append([
             InlineKeyboardButton(
                 text=text,
-                callback_data=UserAction(action=UserAction.ActionType.SHOW_BLACKLIST_USER, target_user_id=uid).pack(),
+                callback_data=UserAction(action=UserAction.ActionType.SHOW_BLACKLISTED_USER, target_user_id=uid).pack(),
             )
         ])
 
@@ -271,26 +280,13 @@ def make_blacklist_list_page(user_ids: list[int], page: int, page_size: int = 10
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def make_blacklist_management_menu() -> InlineKeyboardMarkup:
-    """Create menu for blacklist management."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Список заблокированных", callback_data=UserAction(action=UserAction.ActionType.SHOW_BLACKLIST).pack())],
-        [InlineKeyboardButton(text="Добавить в чёрный список", callback_data=UserAction(action=UserAction.ActionType.ADD_TO_BLACKLIST).pack())],
-        [InlineKeyboardButton(text="Убрать из чёрного списка", callback_data=UserAction(action=UserAction.ActionType.REMOVE_FROM_BLACKLIST).pack())],
-    ])
+# Removed obsolete make_blacklist_management_menu (unused)
 
 
-def make_remove_from_blacklist_keyboard(user_id: int) -> InlineKeyboardMarkup:
+def make_blacklisted_user_management_keyboard(user_id: int) -> InlineKeyboardMarkup:
     """Create keyboard with remove from blacklist button for a specific user."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Убрать из чёрного списка", callback_data=UserAction(action=UserAction.ActionType.REMOVE_FROM_BLACKLIST, target_user_id=user_id).pack())]
-    ])
-
-
-def make_remove_admin_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Create keyboard with remove admin button for a specific user."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Убрать из админов", callback_data=UserAction(action=UserAction.ActionType.REMOVE_ADMIN_DIRECT, target_user_id=user_id).pack())]
     ])
 
 
@@ -302,7 +298,7 @@ def make_order_type_selection_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def make_collection_management_menu() -> InlineKeyboardMarkup:
+def make_collection_management_keyboard() -> InlineKeyboardMarkup:
     """Create keyboard for collection management (start/stop collection)."""
     buttons = []
     if db.is_collecting():
@@ -313,9 +309,29 @@ def make_collection_management_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def make_orders_view_menu() -> InlineKeyboardMarkup:
+def make_orders_view_keyboard() -> InlineKeyboardMarkup:
     """Create keyboard for selecting orders view type."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Все заказы по пользователям", callback_data=OrdersViewAction(view_type=OrdersViewAction.ActionType.BY_USER).pack())],
         [InlineKeyboardButton(text="Все заказы по товарам", callback_data=OrdersViewAction(view_type=OrdersViewAction.ActionType.BY_PRODUCT).pack())]
     ])
+
+
+
+def make_blacklist_list_with_menu_keyboard(user_ids: list[int], page: int) -> InlineKeyboardMarkup:
+    """Unified builder for blacklist list with menu buttons."""
+    menu_kb = make_blacklist_menu_keyboard(page=page)
+
+    if not user_ids:
+        return menu_kb
+
+    list_kb = make_blacklist_list_page(user_ids, page=page)
+    list_kb.inline_keyboard.extend(menu_kb.inline_keyboard)
+    return list_kb
+
+
+def make_blacklist_menu_keyboard(page: int = 1) -> InlineKeyboardMarkup:
+    """Create keyboard with add to blacklist and refresh buttons for blacklist."""
+    add_row = [InlineKeyboardButton(text="Добавить в чёрный список", callback_data=UserAction(action=UserAction.ActionType.ADD_TO_BLACKLIST, target_user_id=None).pack())]
+    refresh_row = [InlineKeyboardButton(text="🔄 Обновить", callback_data=BlacklistPageAction(page=page).pack())]
+    return InlineKeyboardMarkup(inline_keyboard=[add_row, refresh_row])

@@ -9,6 +9,8 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from enum import Enum
 
+from utils.config import BOT_OWNER
+
 # TinyDB persistence (installed via requirements)
 try:
     from tinydb import TinyDB, Query
@@ -342,10 +344,10 @@ def save_data(force: bool = False):
 atexit.register(lambda: save_data(force=True))
 
 # ========== DATA ACCESS WRAPPERS ==========
-def get_users() -> List[User]:
-    """Получить список всех пользователей"""
+def get_users() -> list[User]:
+    """Получить список всех пользователей."""
     rows = _tbl(TBL_USERS).all()
-    return [User.from_record(row) for row in rows]
+    return [User.from_record(row) for row in rows] if rows else []
 
 def get_blacklist() -> List[int]:
     """Получить чёрный список пользователей (из registration)."""
@@ -634,15 +636,16 @@ def set_auth_password(pwd: Optional[str]):
 
 # Legacy blacklist/attempts helpers removed (using registration-only model)
 
-def ensure_initial_admin(initial_admin):
+
+def ensure_initial_admin():
     """
     Ensure BOT_OWNER is present as admin
     """
-    if initial_admin is not None:
-        if not isinstance(initial_admin, list):
-            init_list = [initial_admin]
+    if BOT_OWNER is not None:
+        if not isinstance(BOT_OWNER, list):
+            init_list = [BOT_OWNER]
         else:
-            init_list = initial_admin
+            init_list = BOT_OWNER
         for admin_id in init_list:
             try:
                 uid = int(admin_id)

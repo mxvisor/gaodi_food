@@ -33,7 +33,7 @@ class BotCommands(Enum):
     ADMIN_ORDERS_BY_PRODUCT = ("", "По товарам (админ)", "Просмотр заказов по товарам (массовое выполнение)")
     
     # User management
-    USERS_MENU = ("users", "", "Управление пользователями")
+    USERS_LIST = ("users", "", "Управление пользователями")
     
     # Password management
     PASSWORD_MENU = ("password", "", "Управление паролем")
@@ -96,7 +96,7 @@ def get_admin_commands() -> list['BotCommands']:
         BotCommands.ADMIN_ORDERS_MENU,
         BotCommands.ADMIN_ORDERS_BY_USER,
         BotCommands.ADMIN_ORDERS_BY_PRODUCT,
-        BotCommands.USERS_MENU,
+        BotCommands.USERS_LIST,
         BotCommands.PASSWORD_MENU,
         BotCommands.BLACKLIST_MENU,
         BotCommands.COLLECTION_MENU,     
@@ -104,28 +104,10 @@ def get_admin_commands() -> list['BotCommands']:
     ]
 
 
-def get_commands_with_buttons() -> list['BotCommands']:
-    """Get list of commands that have buttons."""
-    return [cmd for cmd in BotCommands if cmd.button_text]
-
-
-def get_admin_buttons() -> list['BotCommands']:
-    """Get list of admin buttons."""
-    return [
-        BotCommands.COLLECTION_NEW,
-        BotCommands.COLLECTION_CLOSE,
-        BotCommands.ADMIN_ORDERS_BY_USER,
-        BotCommands.ADMIN_ORDERS_BY_PRODUCT,
-    ]
-
-
-def get_user_buttons() -> list['BotCommands']:
-    """Get list of user buttons."""
-    return [
-        BotCommands.OPEN_WEBAPP,
-        BotCommands.ORDERS_CURRENT,
-        BotCommands.ORDERS_PAST,
-    ]
+# Removed unused helper functions:
+# - get_commands_with_buttons
+# - get_admin_buttons
+# - get_user_buttons
 
 
 def generate_user_help() -> str:

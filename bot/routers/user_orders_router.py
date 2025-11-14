@@ -7,33 +7,31 @@ from typing import Optional
 
 from aiogram import Router, types, F
 from aiogram.filters import Command
-from aiogram.fsm.state import StatesGroup, State
-from aiogram.fsm.context import FSMContext
 
 from utils.commands import BotCommands, generate_user_help
-from utils.keyboards import get_main_keyboard_for, make_order_keyboard, set_webapp_url, OrderAction, OrderTypeAction, make_order_type_selection_keyboard
+from utils.keyboards import (
+    get_main_keyboard_for, 
+    OrderAction, 
+    OrderTypeAction,    
+    make_order_keyboard,
+    make_order_type_selection_keyboard,
+)
 from utils.filters import RequireCollecting
-from db.orders_db import UserOrder, User
 from db import orders_db as db
 
 # Import from main bot file (will be set by bot.py)
 # Bot instance no longer needed - using message.bot and callback.bot instead
 
-user_router = Router(name="user_router")
+user_orders_router = Router(name="user_orders_router")
 
 # Dictionary to store last total message ID for each chat
 last_total_message_ids = {}
-
-# ========== FSM ==========
-class UserRegistration(StatesGroup):
-    waiting_for_name = State()
-    waiting_for_password = State()
 
 # ========== Keyboards ==========
 # (moved to keyboards.py)
 
 # ========== ORDER HELPERS ==========
-def make_order_text(order: UserOrder, is_current: bool) -> str:
+def make_order_text(order: db.UserOrder, is_current: bool, show_name: bool = True) -> str:
     name = db.get_username(order.user_id) or str(order.user_id)
     status = "✅ Выполнен" if order.done else ("⏳ Текущий" if is_current else "📦 Прошлый")
     # Получаем данные товара из каталога
@@ -41,8 +39,9 @@ def make_order_text(order: UserOrder, is_current: bool) -> str:
     title = product.title if product else f"Товар #{order.product_id}"
     price = product.price if product else 0
     link = product.link if product else ""
+    header = f"<b>{name}</b>\n" if show_name else ""
     text = (
-        f"<b>{name}</b>\n"
+        f"{header}"
         f"{title} - <b>{price} ₽</b>\n"
         f"Количество: <b>{order.count}</b>\n"
         f"Ссылка: {link}\n"
@@ -50,9 +49,8 @@ def make_order_text(order: UserOrder, is_current: bool) -> str:
     )
     return text
 
-
-async def send_order_message(message, owner_id: int, order: UserOrder, is_current: bool = True):
-    text = make_order_text(order, is_current)
+async def send_order_message(message, owner_id: int, order: db.UserOrder, is_current: bool = True, show_name: bool = True):
+    text = make_order_text(order, is_current, show_name=show_name)
     keyboard = make_order_keyboard(order.user_id, order, is_current)
     try:
         await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
@@ -88,84 +86,22 @@ async def send_updated_total(message, owner_id: int, is_current: bool = True):
     orders = db.get_user_orders(owner_id, is_current=is_current)
     await send_total_message(message, orders, is_current, update_if_exists=True)
 
-# ========== START HANDLER ==========
-@user_router.message(Command(BotCommands.START.command))
-async def start_handler(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-
-    # blacklist check
-    if db.reg_is_blacklisted(user_id):
-        await message.answer("⛔ Вы заблокированы и не можете зарегистрироваться. Обратитесь к администратору.")
+async def send_user_orders(message, user_id: int, is_current: bool):
+    """Helper function to send user orders of specified type."""
+    orders = db.get_user_orders(user_id, is_current)
+    if not orders:
+        order_type = "текущих" if is_current else "прошлых"
+        await message.answer(f"У вас нет {order_type} заказов.", reply_markup=get_main_keyboard_for(user_id))
         return
-
-    if not db.user_exists(user_id):
-        # new user — ask name
-        await message.answer("Привет! Как тебя зовут? Введи, пожалуйста, своё имя:")
-        await state.set_state(UserRegistration.waiting_for_name)
-        return
-    # If user entry exists but has no name, ask for it
-    user = db.get_user(user_id)
-    if not user or not user.name or str(user.name).strip() == "":
-        await message.answer("Привет! Как тебя зовут? Введи, пожалуйста, своё имя:")
-        await state.set_state(UserRegistration.waiting_for_name)
-        return
-    name = db.get_username(user_id)
-    await message.answer(f"Привет, {name}! Выбери действие:", reply_markup=get_main_keyboard_for(user_id))
-
-@user_router.message(UserRegistration.waiting_for_name)
-async def name_handler(message: types.Message, state: FSMContext):
-    name = message.text.strip()
-    user_id = message.from_user.id
-
-    # if user is blacklisted, block
-    if db.reg_is_blacklisted(user_id):
-        await message.answer("⛔ Вы заблокированы. Обратитесь к администратору.")
-        await state.clear()
-        return
-
-    if db.is_admin(user_id):
-        db.set_username(user_id, name)
-        await message.answer(f"✅ Регистрация успешна. Приятно познакомиться, Администратор {name}!", reply_markup=get_main_keyboard_for(user_id))
-        await state.clear()
-    else:
-        # store temporary name in state and ask password
-        await state.update_data(candidate_name=name)
-        await message.answer("Введите пароль для регистрации (у вас 3 попытки):")
-        await state.set_state(UserRegistration.waiting_for_password)
-
-@user_router.message(UserRegistration.waiting_for_password)
-async def password_handler(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    data_state = await state.get_data()
-    name = data_state.get("candidate_name", message.from_user.full_name or str(user_id))
-    entered = message.text.strip()
-
-    # get current auth password
-    pwd = db.get_auth_password()
-    if pwd is None:
-        await message.answer("Регистрация временно закрыта — пароль не настроен. Обратитесь к администратору.")
-        await state.clear()
-        return
-
-    if entered == pwd:
-        # success
-        db.add_user(user_id, name)
-        db.reg_reset_attempts(user_id)
-        await message.answer(f"✅ Регистрация успешна. Приятно познакомиться, {name}!", reply_markup=get_main_keyboard_for(user_id))
-        await state.clear()
-    else:
-        # fail
-        attempts = db.reg_increment_attempts(user_id)
-        remaining = max(0, 3 - attempts)
-        if attempts >= 3:
-            db.reg_set_blacklisted(user_id, True)
-            await message.answer("⛔ Слишком много неверных попыток. Вы добавлены в чёрный список.")
-            await state.clear()
-        else:
-            await message.answer(f"Неверный пароль. Осталось попыток: {remaining}. Попробуйте ещё раз.")
+    # Header with user name printed once
+    header_name = db.get_username(user_id) or str(user_id)
+    await message.answer(f"<b>{header_name}</b>", parse_mode="HTML")
+    for order in orders:
+        await send_order_message(message, user_id, order, is_current=is_current, show_name=False)
+    await send_total_message(message, orders, is_current)
 
 # ========== WEBAPP HANDLER ==========
-@user_router.message(lambda m: m.web_app_data is not None, RequireCollecting())
+@user_orders_router.message(lambda m: m.web_app_data is not None, RequireCollecting())
 async def webapp_data_handler(message: types.Message):
     user_id = message.from_user.id
 
@@ -188,7 +124,7 @@ async def webapp_data_handler(message: types.Message):
     if pid:
         db.upsert_product(db.Product(product_id=pid, title=title, price=price, link=link))
 
-    order = UserOrder(
+    order = db.UserOrder(
         user_id=user_id,
         product_id=pid,
         count=int(data.get("count", 1) or 1),
@@ -197,47 +133,37 @@ async def webapp_data_handler(message: types.Message):
 
     added_order = db.add_user_order(order)
 
+    await message.answer("✅ Заказ успешно добавлен.")
+
     # send owner the created order message
     await send_order_message(message, user_id, added_order, is_current=True)
-
-    await message.answer("✅ Заказ успешно добавлен.")
     
     # Send total after adding order
     all_orders = db.get_user_orders(user_id, True)
     await send_total_message(message, all_orders, True)
 
-async def send_user_orders(message, user_id: int, is_current: bool):
-    """Helper function to send user orders of specified type."""
-    orders = db.get_user_orders(user_id, is_current)
-    if not orders:
-        order_type = "текущих" if is_current else "прошлых"
-        await message.answer(f"У вас нет {order_type} заказов.", reply_markup=get_main_keyboard_for(user_id))
-        return
-    for order in orders:
-        await send_order_message(message, user_id, order, is_current=is_current)
-    await send_total_message(message, orders, is_current)
-
 # ========== USER VIEWS ==========
-@user_router.message(Command(BotCommands.ORDERS_CURRENT.command))
-@user_router.message(F.text == BotCommands.ORDERS_CURRENT.button_text)
+
+@user_orders_router.message(Command(BotCommands.ORDERS_CURRENT.command))
+@user_orders_router.message(F.text == BotCommands.ORDERS_CURRENT.button_text)
 async def my_current_handler(message: types.Message):
     user_id = message.from_user.id
     await send_user_orders(message, user_id, True)
 
-@user_router.message(Command(BotCommands.ORDERS_PAST.command))
-@user_router.message(F.text == BotCommands.ORDERS_PAST.button_text)
+@user_orders_router.message(Command(BotCommands.ORDERS_PAST.command))
+@user_orders_router.message(F.text == BotCommands.ORDERS_PAST.button_text)
 async def user_past_handler(message: types.Message):
     user_id = message.from_user.id
     await send_user_orders(message, user_id, False)
 
-@user_router.message(Command(BotCommands.ORDERS_MENU.command))
+@user_orders_router.message(Command(BotCommands.ORDERS_MENU.command))
 async def user_orders_handler(message: types.Message):
     user_id = message.from_user.id
     keyboard = make_order_type_selection_keyboard()
     await message.answer("Выберите тип заказов для просмотра:", reply_markup=keyboard)
 
 # ========== CALLBACKS ==========
-@user_router.callback_query(OrderAction.filter(F.action == OrderAction.ActionType.CANCEL))
+@user_orders_router.callback_query(OrderAction.filter(F.action == OrderAction.ActionType.CANCEL))
 async def cancel_order_callback(callback: types.CallbackQuery, callback_data: OrderAction):
     owner_id = callback_data.user_id
     product_id = callback_data.product_id
@@ -263,8 +189,7 @@ async def cancel_order_callback(callback: types.CallbackQuery, callback_data: Or
     if removed:
         if callback.message and hasattr(callback.message, "edit_text"):
             try:
-                name = db.get_username(owner_id) or str(owner_id)
-                await callback.message.edit_text(f"{name} — заказ отменён ✅")
+                await callback.message.edit_text("Заказ отменён ✅")
             except Exception:
                 logging.exception("Failed to edit callback message after cancel")
         await callback.answer("Заказ отменён")
@@ -272,7 +197,7 @@ async def cancel_order_callback(callback: types.CallbackQuery, callback_data: Or
     else:
         await callback.answer("Не удалось отменить заказ", show_alert=True)
 
-@user_router.callback_query(OrderAction.filter(F.action == OrderAction.ActionType.DELETE_PAST))
+@user_orders_router.callback_query(OrderAction.filter(F.action == OrderAction.ActionType.DELETE_PAST))
 async def delete_past_order_callback(callback: types.CallbackQuery, callback_data: OrderAction):
     owner_id = callback_data.user_id
     product_id = callback_data.product_id
@@ -295,8 +220,7 @@ async def delete_past_order_callback(callback: types.CallbackQuery, callback_dat
     if removed:
         if callback.message and hasattr(callback.message, "edit_text"):
             try:
-                name = db.get_username(owner_id) or str(owner_id)
-                await callback.message.edit_text(f"{name} — прошлый заказ удалён ❌")
+                await callback.message.edit_text("Прошлый заказ удалён ❌")
             except Exception:
                 logging.exception("Failed to edit callback message after deletepast")
         await callback.answer("Заказ удалён")
@@ -304,7 +228,7 @@ async def delete_past_order_callback(callback: types.CallbackQuery, callback_dat
     else:
         await callback.answer("Не удалось удалить заказ", show_alert=True)
 
-@user_router.callback_query(OrderAction.filter(F.action.in_([OrderAction.ActionType.INCREASE, OrderAction.ActionType.DECREASE])), RequireCollecting())
+@user_orders_router.callback_query(OrderAction.filter(F.action.in_([OrderAction.ActionType.INCREASE, OrderAction.ActionType.DECREASE])), RequireCollecting())
 async def change_order_count_callback(callback: types.CallbackQuery, callback_data: OrderAction):
     owner_id = callback_data.user_id
     product_id = callback_data.product_id
@@ -338,7 +262,7 @@ async def change_order_count_callback(callback: types.CallbackQuery, callback_da
     if not db.upsert_user_order(order):
         await callback.answer("Не удалось обновить заказ", show_alert=True)
         return
-    text = make_order_text(order, True)
+    text = make_order_text(order, True, show_name=False)
     keyboard = make_order_keyboard(order.user_id, order, True)
     if callback.message and hasattr(callback.message, "edit_text"):
         try:
@@ -350,7 +274,7 @@ async def change_order_count_callback(callback: types.CallbackQuery, callback_da
     await send_updated_total(callback.message, owner_id, is_current=True)
 
 # ========== ORDER TYPE SELECTION ==========
-@user_router.callback_query(OrderTypeAction.filter())
+@user_orders_router.callback_query(OrderTypeAction.filter())
 async def order_type_callback(callback: types.CallbackQuery, callback_data: OrderTypeAction):
     user_id = callback.from_user.id
     order_type = callback_data.order_type
@@ -363,7 +287,7 @@ async def order_type_callback(callback: types.CallbackQuery, callback_data: Orde
     await callback.answer()
 
 # ========== HELP ==========
-@user_router.message(Command(BotCommands.HELP.command))
+@user_orders_router.message(Command(BotCommands.HELP.command))
 async def help_handler(message: types.Message):
     """Show user help information."""
     await message.answer(generate_user_help())
