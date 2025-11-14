@@ -6,6 +6,9 @@ import asyncio  # may still be used elsewhere; safe to keep
 from aiogram import exceptions
 from enum import Enum
 
+from aiogram.filters import Command, or_f
+from aiogram import F
+
 
 class BotCommands(Enum):
     """Bot commands enum with command, button_text, and description."""
@@ -41,6 +44,8 @@ class BotCommands(Enum):
     # Blacklist management
     BLACKLIST_MENU = ("blacklist", "", "Управление чёрным списком")
     
+    # Update management
+    CHECK_UPDATE = ("check_update", "", "Проверить обновления бота")
     
     # Admin help
     ADMIN_HELP = ("admin_help", "Помощь (админ)", "Показать справку для администратора")
@@ -62,6 +67,13 @@ class BotCommands(Enum):
     def description(self) -> str:
         """Get command description."""
         return self.value[2]
+
+    @property
+    def filter(self):
+        """Фильтр, который срабатывает и на команду, и на текст кнопки."""
+        cmd_filter = Command(self.command)
+        btn_filter = F.text == self.button_text
+        return or_f(cmd_filter, btn_filter)
 
     def __str__(self) -> str:
         """String representation."""
@@ -99,6 +111,7 @@ def get_admin_commands() -> list['BotCommands']:
         BotCommands.USERS_LIST,
         BotCommands.PASSWORD_MENU,
         BotCommands.BLACKLIST_MENU,
+        BotCommands.CHECK_UPDATE,
         BotCommands.COLLECTION_MENU,     
         BotCommands.ADMIN_HELP,
     ]
@@ -173,10 +186,10 @@ async def setup_bot_commands(bot):
     
     # Однократная установка команд для всех пользователей
     try:
-        await bot.set_my_commands(user_commands_list, scope=BotCommandScopeDefault())
+        await bot.set_my_commands(user_commands_list, scope=BotCommandScopeDefault(), request_timeout=10)
         logging.info(f"Set {len(user_commands_list)} user commands")
     except Exception as e:
-        logging.error(f"Failed to set global user commands: {e.__class__.__name__}: {e}")
+        logging.debug(f"Failed to set global user commands: {e.__class__.__name__}: {e}")
 
 
 # Track which admins have had their commands set
@@ -243,11 +256,12 @@ async def setup_admin_commands(bot, admin_id: int):
         try:
             await bot.set_my_commands(
                 admin_commands_list,
-                scope=BotCommandScopeChat(chat_id=admin_id)
+                scope=BotCommandScopeChat(chat_id=admin_id),
+                request_timeout=10  # Уменьшенный таймаут до 10s
             )
             _admins_with_commands.add(admin_id)
             logging.info(f"Set {len(admin_commands_list)} admin commands for user {admin_id}")
         except Exception as e:
-            logging.error(f"Failed to set admin commands for {admin_id}: {e.__class__.__name__}: {e}")
+            logging.debug(f"Failed to set admin commands for {admin_id}: {e.__class__.__name__}: {e}")
     except Exception as e:
         logging.error(f"Unexpected error building admin commands list for {admin_id}: {e.__class__.__name__}: {e}")

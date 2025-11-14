@@ -10,6 +10,7 @@ from aiogram.fsm.context import FSMContext
 
 from utils.commands import BotCommands
 from utils.keyboards import get_main_keyboard_for
+
 from db import orders_db as db
 
 registration_router = Router(name="registration_router")
@@ -20,7 +21,7 @@ class UserRegistration(StatesGroup):
     waiting_for_password = State()
 
 # ========== START HANDLER ==========
-@registration_router.message(Command(BotCommands.START.command))
+@registration_router.message(BotCommands.START.filter)
 async def start_handler(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
 

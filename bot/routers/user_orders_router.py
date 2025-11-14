@@ -144,26 +144,24 @@ async def webapp_data_handler(message: types.Message):
 
 # ========== USER VIEWS ==========
 
-@user_orders_router.message(Command(BotCommands.ORDERS_CURRENT.command))
-@user_orders_router.message(F.text == BotCommands.ORDERS_CURRENT.button_text)
+@user_orders_router.message(BotCommands.ORDERS_CURRENT.filter)
 async def my_current_handler(message: types.Message):
     user_id = message.from_user.id
     await send_user_orders(message, user_id, True)
 
-@user_orders_router.message(Command(BotCommands.ORDERS_PAST.command))
-@user_orders_router.message(F.text == BotCommands.ORDERS_PAST.button_text)
+@user_orders_router.message(BotCommands.ORDERS_PAST.filter)
 async def user_past_handler(message: types.Message):
     user_id = message.from_user.id
     await send_user_orders(message, user_id, False)
 
-@user_orders_router.message(Command(BotCommands.ORDERS_MENU.command))
+@user_orders_router.message(BotCommands.ORDERS_MENU.filter)
 async def user_orders_handler(message: types.Message):
     user_id = message.from_user.id
     keyboard = make_order_type_selection_keyboard()
     await message.answer("Выберите тип заказов для просмотра:", reply_markup=keyboard)
 
 # ========== CALLBACKS ==========
-@user_orders_router.callback_query(OrderAction.filter(F.action == OrderAction.ActionType.CANCEL))
+@user_orders_router.callback_query(OrderAction.filter_action(OrderAction.ActionType.CANCEL))
 async def cancel_order_callback(callback: types.CallbackQuery, callback_data: OrderAction):
     owner_id = callback_data.user_id
     product_id = callback_data.product_id
@@ -197,7 +195,7 @@ async def cancel_order_callback(callback: types.CallbackQuery, callback_data: Or
     else:
         await callback.answer("Не удалось отменить заказ", show_alert=True)
 
-@user_orders_router.callback_query(OrderAction.filter(F.action == OrderAction.ActionType.DELETE_PAST))
+@user_orders_router.callback_query(OrderAction.filter_action(OrderAction.ActionType.DELETE_PAST))
 async def delete_past_order_callback(callback: types.CallbackQuery, callback_data: OrderAction):
     owner_id = callback_data.user_id
     product_id = callback_data.product_id
@@ -228,7 +226,7 @@ async def delete_past_order_callback(callback: types.CallbackQuery, callback_dat
     else:
         await callback.answer("Не удалось удалить заказ", show_alert=True)
 
-@user_orders_router.callback_query(OrderAction.filter(F.action.in_([OrderAction.ActionType.INCREASE, OrderAction.ActionType.DECREASE])), RequireCollecting())
+@user_orders_router.callback_query(OrderAction.adjust(), RequireCollecting())
 async def change_order_count_callback(callback: types.CallbackQuery, callback_data: OrderAction):
     owner_id = callback_data.user_id
     product_id = callback_data.product_id
@@ -274,7 +272,7 @@ async def change_order_count_callback(callback: types.CallbackQuery, callback_da
     await send_updated_total(callback.message, owner_id, is_current=True)
 
 # ========== ORDER TYPE SELECTION ==========
-@user_orders_router.callback_query(OrderTypeAction.filter())
+@user_orders_router.callback_query(OrderTypeAction.any())
 async def order_type_callback(callback: types.CallbackQuery, callback_data: OrderTypeAction):
     user_id = callback.from_user.id
     order_type = callback_data.order_type
@@ -287,8 +285,5 @@ async def order_type_callback(callback: types.CallbackQuery, callback_data: Orde
     await callback.answer()
 
 # ========== HELP ==========
-@user_orders_router.message(Command(BotCommands.HELP.command))
-async def help_handler(message: types.Message):
-    """Show user help information."""
-    await message.answer(generate_user_help())
+# Moved to help_router.py
 

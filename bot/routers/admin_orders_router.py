@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import logging
-from typing import List
+from typing import Any, List
 
 from aiogram import Router, types, F, Bot
 from aiogram.filters import Command
@@ -21,36 +21,23 @@ from utils.keyboards import (
 from utils.filters import IsAdmin
 from db import orders_db as db
 
+# Import from admin_router
+from utils.broadcast import broadcast_message
+
 # Import from user_orders_router
 from .user_orders_router import make_order_text
 
 admin_orders_router = Router(name="admin_orders_router")
 
-# ========== UTILITY FUNCTIONS ==========
-
-async def broadcast_to_all_users(bot, text: str):
-    """Отправляет сообщение всем пользователям бота"""
-    users = db.get_users()
-    for user in users:
-        try:
-            await bot.send_message(user.user_id, text)
-        except Exception as e:
-            if "chat not found" in str(e).lower():
-                # User has blocked the bot or deleted chat, remove from db
-                db.remove_user(user.user_id)
-                logging.info(f"Removed user {user.user_id} due to chat not found")
-            else:
-                logging.exception(f"Failed to broadcast to user {user.user_id}")
-
 # ========== COLLECTION MANAGEMENT ==========
 # Функции для управления сбором заказов (открытие/закрытие)
 
-@admin_orders_router.message(Command(BotCommands.COLLECTION_MENU.command), IsAdmin())
+@admin_orders_router.message(BotCommands.COLLECTION_MENU.filter, IsAdmin())
 async def collection_menu_handler(message: types.Message):
     """Показывает меню управления сбором заказов"""
     await message.answer("Управление сбором заказов:", reply_markup=make_collection_management_keyboard())
 
-@admin_orders_router.callback_query(CollectionAction.filter())
+@admin_orders_router.callback_query(CollectionAction.any())
 async def collection_action_callback(callback: types.CallbackQuery, callback_data: CollectionAction):
     """Обрабатывает действия управления сбором заказов (открыть/закрыть)"""
 
@@ -66,29 +53,26 @@ async def collection_action_callback(callback: types.CallbackQuery, callback_dat
 
     await callback.answer()
 
-@admin_orders_router.message(Command(BotCommands.COLLECTION_NEW.command), IsAdmin())
-@admin_orders_router.message(F.text == BotCommands.COLLECTION_NEW.button_text, IsAdmin())
+@admin_orders_router.message(BotCommands.COLLECTION_NEW.filter, IsAdmin())
 async def new_collection_handler(message: types.Message):
     """Создаёт новый сбор заказов и уведомляет всех пользователей"""
     db.move_orders_to_old()
     db.set_collection_state(True)
-    await broadcast_to_all_users(message.bot, "🎉 Новый сбор заказов открыт! Можно отправлять новые заказы.")
+    await broadcast_message(message.bot, "🎉 Новый сбор заказов открыт! Можно отправлять новые заказы.", for_admins=False)
     await message.answer("Сбор заказов открыт и всем пользователям отправлено уведомление.", reply_markup=get_main_keyboard_for(message.from_user.id))
 
-@admin_orders_router.message(Command(BotCommands.COLLECTION_OPEN.command), IsAdmin())
-@admin_orders_router.message(F.text == BotCommands.COLLECTION_OPEN.button_text, IsAdmin())
+@admin_orders_router.message(BotCommands.COLLECTION_OPEN.filter, IsAdmin())
 async def open_collection_handler(message: types.Message):
     """Открывает текущий сбор заказов без создания нового"""
     db.set_collection_state(True)
-    await broadcast_to_all_users(message.bot, "🎉 Сбор заказов снова открыт! Можно отправлять заказы.")
+    await broadcast_message(message.bot, "🎉 Сбор заказов снова открыт! Можно отправлять заказы.", for_admins=False)
     await message.answer("Сбор заказов открыт и всем пользователям отправлено уведомление.", reply_markup=get_main_keyboard_for(message.from_user.id))
 
-@admin_orders_router.message(Command(BotCommands.COLLECTION_CLOSE.command), IsAdmin())
-@admin_orders_router.message(F.text == BotCommands.COLLECTION_CLOSE.button_text, IsAdmin())
+@admin_orders_router.message(BotCommands.COLLECTION_CLOSE.filter, IsAdmin())
 async def close_collection_handler(message: types.Message):
     """Закрывает сбор заказов и уведомляет всех пользователей"""
     db.set_collection_state(False)
-    await broadcast_to_all_users(message.bot, "⛔ Сбор заказов закрыт. Спасибо за заявки.")
+    await broadcast_message(message.bot, "⛔ Сбор заказов закрыт. Спасибо за заявки.", for_admins=False)
     await message.answer("Сбор заказов закрыт и уведомления отправлены.", reply_markup=get_main_keyboard_for(message.from_user.id))
 
 # ========== ORDER HELPERS ==========
@@ -126,12 +110,12 @@ def make_order_text_by_product(product: db.Product, orders: List[db.UserOrder]) 
 # ========== ORDER VIEWING ==========
 # Функции для просмотра заказов
 
-@admin_orders_router.message(Command(BotCommands.ADMIN_ORDERS_MENU.command), IsAdmin())
+@admin_orders_router.message(BotCommands.ADMIN_ORDERS_MENU.filter, IsAdmin())
 async def all_orders_menu_handler(message: types.Message):
     """Показывает меню выбора типа просмотра заказов"""
     await message.answer("Выберите тип просмотра заказов:", reply_markup=make_orders_view_keyboard())
 
-@admin_orders_router.callback_query(OrdersViewAction.filter())
+@admin_orders_router.callback_query(OrdersViewAction.any())
 async def orders_view_callback(callback: types.CallbackQuery, callback_data: OrdersViewAction):
     """Обрабатывает выбор типа просмотра заказов (по пользователям/по товарам)"""
 
@@ -146,8 +130,7 @@ async def orders_view_callback(callback: types.CallbackQuery, callback_data: Ord
 
     await callback.answer()
 
-@admin_orders_router.message(Command(BotCommands.ADMIN_ORDERS_BY_USER.command), IsAdmin())
-@admin_orders_router.message(F.text == BotCommands.ADMIN_ORDERS_BY_USER.button_text, IsAdmin())
+@admin_orders_router.message(BotCommands.ADMIN_ORDERS_BY_USER.filter, IsAdmin())
 async def all_orders_by_user_handler(message: types.Message):
     """Показывает все текущие заказы, сгруппированные по пользователям"""
 
@@ -169,8 +152,10 @@ async def all_orders_by_user_handler(message: types.Message):
             keyboard = make_order_done_keyboard(order.user_id, order.product_id, order.done)
             await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
-@admin_orders_router.message(Command(BotCommands.ADMIN_ORDERS_BY_PRODUCT.command), IsAdmin())
-@admin_orders_router.message(F.text == BotCommands.ADMIN_ORDERS_BY_PRODUCT.button_text, IsAdmin())
+
+
+#@admin_orders_router.message(BotCommands.ADMIN_ORDERS_BY_PRODUCT.filter, IsAdmin())
+@admin_orders_router.message(BotCommands.ADMIN_ORDERS_BY_PRODUCT.filter, IsAdmin())
 async def all_orders_by_product_handler(message: types.Message):
     """Показывает все текущие заказы, сгруппированные по товарам"""
 
@@ -191,7 +176,7 @@ async def all_orders_by_product_handler(message: types.Message):
         await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
 
-@admin_orders_router.callback_query(OrderAction.filter(F.action == OrderAction.ActionType.DONE_PRODUCT))
+@admin_orders_router.callback_query(OrderAction.filter_action(OrderAction.ActionType.DONE_PRODUCT))
 async def mark_product_done_callback(callback: types.CallbackQuery, callback_data: OrderAction):
     """Отмечает все заказы конкретного товара как выполненные для всех пользователей"""
 
@@ -214,7 +199,7 @@ async def mark_product_done_callback(callback: types.CallbackQuery, callback_dat
 
     await callback.answer(f"Отмечено выполненным {updated_count} заказов")
 
-@admin_orders_router.callback_query(OrderAction.filter(F.action == OrderAction.ActionType.DONE))
+@admin_orders_router.callback_query(OrderAction.filter_action(OrderAction.ActionType.DONE_PRODUCT))
 async def mark_order_done_callback(callback: types.CallbackQuery, callback_data: OrderAction):
     """Отмечает конкретный заказ пользователя как выполненный"""
 

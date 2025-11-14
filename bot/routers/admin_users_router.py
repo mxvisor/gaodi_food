@@ -33,7 +33,7 @@ def _build_users_page(page: int) -> tuple[str, types.InlineKeyboardMarkup]:
     full_kb = make_users_list_with_menu_keyboard(users_sorted, page=page)
     return text, full_kb
 
-@admin_users_router.message(Command(BotCommands.USERS_LIST.command), IsAdmin())
+@admin_users_router.message(BotCommands.USERS_LIST.filter, IsAdmin())
 async def list_users_handler(message: types.Message):
     text, kb = _build_users_page(page=1)
     await message.answer(text, reply_markup=kb)
@@ -71,14 +71,14 @@ async def process_add_user(message: types.Message, state: FSMContext):
     await message.answer(f"Пользователь {user_id} добавлен.", parse_mode=None)
     await state.clear()
 
-@admin_users_router.callback_query(UserAction.filter(F.action == UserAction.ActionType.ADD_USER))
+@admin_users_router.callback_query(UserAction.filter_action(UserAction.ActionType.ADD_USER))
 async def add_user_by_id_callback(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_for_user_id_add_user)
     if callback.message:
         await callback.message.answer("Введите ID пользователя, которого хотите добавить:", parse_mode=None)
     await callback.answer()
 
-@admin_users_router.callback_query(UserAction.filter(F.action == UserAction.ActionType.SHOW))
+@admin_users_router.callback_query(UserAction.filter_action(UserAction.ActionType.SHOW))
 async def show_user_manage_callback(callback: types.CallbackQuery, callback_data: UserAction):
     user_id = callback_data.target_user_id
     assert user_id is not None
@@ -96,7 +96,7 @@ async def show_user_manage_callback(callback: types.CallbackQuery, callback_data
             logging.exception("Failed to send user manage keyboard")
     await callback.answer()
 
-@admin_users_router.callback_query(UserAction.filter(F.action == UserAction.ActionType.ADD_TO_ADMINS))
+@admin_users_router.callback_query(UserAction.filter_action(UserAction.ActionType.ADD_TO_ADMINS))
 async def add_user_to_admins_callback(callback: types.CallbackQuery, callback_data: UserAction, state: FSMContext):
     user_id = callback_data.target_user_id
     assert user_id is not None
@@ -106,7 +106,7 @@ async def add_user_to_admins_callback(callback: types.CallbackQuery, callback_da
         await callback.message.answer(f"Пользователь {user_id} добавлен в админы.")
     await callback.answer()
 
-@admin_users_router.callback_query(UserAction.filter(F.action == UserAction.ActionType.REMOVE_FROM_ADMINS))
+@admin_users_router.callback_query(UserAction.filter_action(UserAction.ActionType.REMOVE_FROM_ADMINS))
 async def remove_user_from_admins_callback(callback: types.CallbackQuery, callback_data: UserAction, state: FSMContext):
     user_id = callback_data.target_user_id
     assert user_id is not None
@@ -120,7 +120,7 @@ async def remove_user_from_admins_callback(callback: types.CallbackQuery, callba
         await callback.message.answer(f"Пользователь {user_id} удалён из админов.")
     await callback.answer()
 
-@admin_users_router.callback_query(UserAction.filter(F.action == UserAction.ActionType.DELETE))
+@admin_users_router.callback_query(UserAction.filter_action(UserAction.ActionType.DELETE))
 async def delete_user_callback(callback: types.CallbackQuery, callback_data: UserAction):
     target_user_id = callback_data.target_user_id
     assert target_user_id is not None
@@ -140,7 +140,7 @@ async def delete_user_callback(callback: types.CallbackQuery, callback_data: Use
             logging.exception("Failed to edit deletion message")
     await callback.answer("Пользователь удалён")
 
-@admin_users_router.callback_query(UserAction.filter(F.action == UserAction.ActionType.RENAME))
+@admin_users_router.callback_query(UserAction.filter_action(UserAction.ActionType.RENAME))
 async def rename_user_callback(callback: types.CallbackQuery, callback_data: UserAction, state: FSMContext):
     target_user_id = callback_data.target_user_id
     assert target_user_id is not None

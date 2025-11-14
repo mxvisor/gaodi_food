@@ -9,15 +9,34 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton
 )
 from aiogram.filters.callback_data import CallbackData
+from aiogram import F
+from aiogram.filters import or_f
 
 from utils.commands import BotCommands
 import db.orders_db as db
 
 from utils.config import WEBAPP_URL
 
+# ========== BASE CLASSES ==========
+
+class BaseActionCallback:
+    """
+    Базовый класс для CallbackData, у которых есть поле `action` (Enum)
+    """
+
+    @classmethod
+    def filter_action(cls, action: Enum):
+        """Фильтр на конкретное действие"""
+        return cls.filter(F.action == action)
+
+    @classmethod
+    def any(cls):
+        """Фильтр на любое действие"""
+        return cls.filter(F.action.is_not(None))
+
 # ========== CALLBACK DATA CLASSES ==========
 
-class OrderAction(CallbackData, prefix="order"):
+class OrderAction(CallbackData, BaseActionCallback, prefix="order"):
     class ActionType(Enum):
         INCREASE = "increase"
         DECREASE = "decrease"
@@ -26,12 +45,16 @@ class OrderAction(CallbackData, prefix="order"):
         DONE = "done"
         DONE_PRODUCT = "done_product"
 
+    @classmethod
+    def adjust(cls):
+        return or_f(cls.filter_action(OrderAction.ActionType.INCREASE), cls.filter_action(OrderAction.ActionType.DECREASE))
+
     action: ActionType
     product_id: int
     user_id: int | None = None
 
 
-class UserAction(CallbackData, prefix="user"):
+class UserAction(CallbackData, BaseActionCallback, prefix="user"):
     class ActionType(Enum):
         RENAME = "rename"
         SHOW = "show"
@@ -47,7 +70,7 @@ class UserAction(CallbackData, prefix="user"):
     target_user_id: Optional[int] = None
 
 
-class PasswordAction(CallbackData, prefix="password"):
+class PasswordAction(CallbackData, BaseActionCallback, prefix="password"):
     class ActionType(Enum):
         CHANGE = "change"
         DELETE = "delete"
@@ -55,15 +78,15 @@ class PasswordAction(CallbackData, prefix="password"):
     action: ActionType
 
 
-class OrderTypeAction(CallbackData, prefix="ordertype"):
-    class OrderType(Enum):
+class OrderTypeAction(CallbackData, BaseActionCallback, prefix="ordertype"):
+    class ActionType(Enum):
         CURRENT = "current"
         PAST = "past"
 
-    order_type: OrderType
+    action: ActionType
 
 
-class CollectionAction(CallbackData, prefix="collection"):
+class CollectionAction(CallbackData, BaseActionCallback, prefix="collection"):
     class ActionType(Enum):
         NEW = "new"
         CLOSE = "close"
@@ -72,12 +95,19 @@ class CollectionAction(CallbackData, prefix="collection"):
     action: ActionType
 
 
-class OrdersViewAction(CallbackData, prefix="ordersview"):
+class UpdateAction(CallbackData, BaseActionCallback, prefix="update"):
+    class ActionType(Enum):
+        DO_UPDATE = "do_update"
+
+    action: ActionType
+
+
+class OrdersViewAction(CallbackData, BaseActionCallback, prefix="ordersview"):
     class ActionType(Enum):
         BY_USER = "by_user"
         BY_PRODUCT = "by_product"
 
-    view_type: ActionType
+    action: ActionType
 
 
 class UsersPageAction(CallbackData, prefix="userspage"):
@@ -293,8 +323,8 @@ def make_blacklisted_user_management_keyboard(user_id: int) -> InlineKeyboardMar
 def make_order_type_selection_keyboard() -> InlineKeyboardMarkup:
     """Create keyboard for selecting order type (current or past)."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Текущие заказы", callback_data=OrderTypeAction(order_type=OrderTypeAction.OrderType.CURRENT).pack())],
-        [InlineKeyboardButton(text="Прошлые заказы", callback_data=OrderTypeAction(order_type=OrderTypeAction.OrderType.PAST).pack())]
+        [InlineKeyboardButton(text="Текущие заказы", callback_data=OrderTypeAction(action=OrderTypeAction.ActionType.CURRENT).pack())],
+        [InlineKeyboardButton(text="Прошлые заказы", callback_data=OrderTypeAction(action=OrderTypeAction.ActionType.PAST).pack())]
     ])
 
 
@@ -312,8 +342,8 @@ def make_collection_management_keyboard() -> InlineKeyboardMarkup:
 def make_orders_view_keyboard() -> InlineKeyboardMarkup:
     """Create keyboard for selecting orders view type."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Все заказы по пользователям", callback_data=OrdersViewAction(view_type=OrdersViewAction.ActionType.BY_USER).pack())],
-        [InlineKeyboardButton(text="Все заказы по товарам", callback_data=OrdersViewAction(view_type=OrdersViewAction.ActionType.BY_PRODUCT).pack())]
+        [InlineKeyboardButton(text="Все заказы по пользователям", callback_data=OrdersViewAction(action=OrdersViewAction.ActionType.BY_USER).pack())],
+        [InlineKeyboardButton(text="Все заказы по товарам", callback_data=OrdersViewAction(action=OrdersViewAction.ActionType.BY_PRODUCT).pack())]
     ])
 
 
@@ -335,3 +365,10 @@ def make_blacklist_menu_keyboard(page: int = 1) -> InlineKeyboardMarkup:
     add_row = [InlineKeyboardButton(text="Добавить в чёрный список", callback_data=UserAction(action=UserAction.ActionType.ADD_TO_BLACKLIST, target_user_id=None).pack())]
     refresh_row = [InlineKeyboardButton(text="🔄 Обновить", callback_data=BlacklistPageAction(page=page).pack())]
     return InlineKeyboardMarkup(inline_keyboard=[add_row, refresh_row])
+
+
+def make_update_keyboard() -> InlineKeyboardMarkup:
+    """Create keyboard for update confirmation."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Обновить ✅", callback_data=UpdateAction(action=UpdateAction.ActionType.DO_UPDATE).pack())]
+    ])

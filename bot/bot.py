@@ -18,14 +18,16 @@ import db.orders_db as db
 import db.autosave as db_auto
 
 # ========== ROUTERS ==========
-from routers.admin_router import admin_router
 from routers.admin_users_router import admin_users_router
 from routers.admin_blacklist_router import admin_blacklist_router
 from routers.admin_password_router import admin_password_router
 from routers.admin_orders_router import admin_orders_router
+from routers.admin_update_router import router as admin_update_router
 from routers.user_orders_router import user_orders_router
 from routers.registration_router import registration_router
+from routers.help_router import help_router
 
+from utils.broadcast import broadcast_message
 
 # ========== COMMANDS ==========
 from utils.commands import setup_bot_commands, setup_admin_commands
@@ -71,14 +73,20 @@ async def main():
             ),
         )
         dp = Dispatcher()
+        # List of routers to include
+        routers = [
+            admin_users_router,
+            admin_blacklist_router,
+            admin_password_router,
+            admin_orders_router,
+            admin_update_router,
+            user_orders_router,
+            registration_router,
+            help_router,
+        ]
         # Include routers
-        dp.include_router(admin_router)
-        dp.include_router(admin_users_router)
-        dp.include_router(admin_blacklist_router)
-        dp.include_router(admin_password_router)
-        dp.include_router(admin_orders_router)
-        dp.include_router(user_orders_router)
-        dp.include_router(registration_router)
+        for router in routers:
+            dp.include_router(router)
 
         # Use bot as async context manager to ensure HTTP session closes on shutdown
         async with bot:
@@ -88,6 +96,8 @@ async def main():
             for user in db.get_users():
                 if user.is_admin:
                     await setup_admin_commands(bot, user.user_id)
+            # notify admins that bot started
+            await broadcast_message(bot, "🤖 Бот запустился!", for_admins=True)
             # start autosave loop
             asyncio.create_task(db_auto.autosave_loop())
             logging.info("Bot starting...")
@@ -99,6 +109,14 @@ async def main():
     finally:
         # Always persist data even on interruptions or errors
         db.save_data(force=True)
+        # notify admins that bot stopped
+        await broadcast_message(bot, "🤖 Бот остановлен!", for_admins=True)
+        try:
+            await bot.session.close()
+        except Exception:
+            pass        
+    logging.info("Bot stopped!")    
+
 
 if __name__ == "__main__":
     asyncio.run(main())

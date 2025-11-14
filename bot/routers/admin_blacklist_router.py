@@ -31,7 +31,7 @@ def _build_blacklist_page(page: int) -> tuple[str, types.InlineKeyboardMarkup]:
     full_kb = make_blacklist_list_with_menu_keyboard(bl, page=page)
     return text, full_kb
 
-@admin_blacklist_router.message(Command(BotCommands.BLACKLIST_MENU.command), IsAdmin())
+@admin_blacklist_router.message(BotCommands.BLACKLIST_MENU.filter, IsAdmin())
 async def blacklist_menu_handler(message: types.Message):
     text, kb = _build_blacklist_page(page=1)
     await message.answer(text, reply_markup=kb)
@@ -67,14 +67,14 @@ async def process_add_to_blacklist(message: types.Message, state: FSMContext):
     await message.answer(f"Пользователь {target} ({name}) добавлен в чёрный список.")
     await state.clear()
 
-@admin_blacklist_router.callback_query(UserAction.filter(F.action == UserAction.ActionType.ADD_TO_BLACKLIST))
+@admin_blacklist_router.callback_query(UserAction.filter_action(UserAction.ActionType.ADD_TO_BLACKLIST))
 async def add_to_blacklist_callback(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_for_user_id_add_to_blacklist)
     if callback.message:
         await callback.message.answer("Введите ID пользователя, которого хотите добавить в чёрный список:", parse_mode=None)
     await callback.answer()
 
-@admin_blacklist_router.callback_query(UserAction.filter(F.action == UserAction.ActionType.SHOW_BLACKLISTED_USER))
+@admin_blacklist_router.callback_query(UserAction.filter_action(UserAction.ActionType.SHOW_BLACKLISTED_USER))
 async def show_blacklisted_user_callback(callback: types.CallbackQuery, callback_data: UserAction):
     uid = callback_data.target_user_id
     assert uid is not None
@@ -84,7 +84,7 @@ async def show_blacklisted_user_callback(callback: types.CallbackQuery, callback
         await callback.message.answer(f"🚫 {uid}: {name}", reply_markup=kb)
     await callback.answer()
 
-@admin_blacklist_router.callback_query(UserAction.filter(F.action == UserAction.ActionType.REMOVE_FROM_BLACKLIST))
+@admin_blacklist_router.callback_query(UserAction.filter_action(UserAction.ActionType.REMOVE_FROM_BLACKLIST))
 async def remove_from_blacklist_callback(callback: types.CallbackQuery, callback_data: UserAction, state: FSMContext):
     user_id = callback_data.target_user_id
     assert user_id is not None
