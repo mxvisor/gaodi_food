@@ -116,27 +116,37 @@ async def webapp_data_handler(message: types.Message):
         await message.answer("Неверные данные из WebApp. Заказ не принят.")
         return
 
-    # Обновляем/добавляем товар в каталог продуктов
-    pid = int(data.get("product_id", 0) or 0)
-    title = data.get("title", "")
-    price = int(data.get("price", 0) or 0)
-    link = data.get("link", "")
-    if pid:
-        db.upsert_product(db.Product(product_id=pid, title=title, price=price, link=link))
+    # Поддержка массива заказов или одного заказа
+    if isinstance(data, list):
+        orders_list = data
+    else:
+        orders_list = [data]
 
-    order = db.UserOrder(
-        user_id=user_id,
-        product_id=pid,
-        count=int(data.get("count", 1) or 1),
-        done=False
-    )
+    added_orders = []
+    for order_data in orders_list:
+        # Обновляем/добавляем товар в каталог продуктов
+        pid = int(order_data.get("product_id", 0) or 0)
+        title = order_data.get("title", "")
+        price = int(order_data.get("price", 0) or 0)
+        link = order_data.get("link", "")
+        if pid:
+            db.upsert_product(db.Product(product_id=pid, title=title, price=price, link=link))
 
-    added_order = db.add_user_order(order)
+        order = db.UserOrder(
+            user_id=user_id,
+            product_id=pid,
+            count=int(order_data.get("count", 1) or 1),
+            done=False
+        )
 
-    await message.answer("✅ Заказ успешно добавлен.")
+        added_order = db.add_user_order(order)
+        added_orders.append(added_order)
 
-    # send owner the created order message
-    await send_order_message(message, user_id, added_order, is_current=True)
+    await message.answer(f"✅ {len(added_orders)} заказ(ов) успешно добавлен(ы).")
+
+    # send owner the created order messages
+    for added_order in added_orders:
+        await send_order_message(message, user_id, added_order, is_current=True)
     
     # Send total after adding order
     all_orders = db.get_user_orders(user_id, True)
