@@ -2,6 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Mealty WebApp</title>
   <link rel="stylesheet" href="/static/style.css" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
@@ -13,13 +14,17 @@
 
   <main class="container">
     <div class="controls">
-      <label for="category">Категория:</label>
-      <select id="category">
-        <option value="all">Все</option>
-        {% for c in categories %}
-          <option value="{{ c.id }}">{{ c.name }}</option>
-        {% endfor %}
-      </select>
+      <button id="orderAllBtn" class="order-btn">Заказать (<span id="totalQty">0</span>)</button>
+      <div class="category-row">
+        <label for="category">Категория:</label>
+        <select id="category">
+          <option value="all">Все</option>
+          <option value="selected">Выбранные</option>
+          {% for c in categories %}
+            <option value="{{ c.id }}">{{ c.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
       <!--   <button id="refreshBtn">Обновить</button>-->
     </div>
 
@@ -27,7 +32,9 @@
       {% for p in products %}
       <div class="card" 
      data-category="{{ p.category_id }}" 
-     data-id="{{ p.seller_id or p.product_id }}" 
+     data-id="{{ p.id }}" 
+     data-seller-id="{{ p.seller_id }}"
+     data-product-id="{{ p.product_id }}"
      data-desc="{{ p.desc|escape }}"
      data-title="{{ p.title|escape }}"
      data-price="{{ p.price }}"">
@@ -57,11 +64,10 @@
           <div class="subtitle">{{ p.subtitle }}</div>
           <div class="price">{{ p.price }} руб.</div>
           <div class="quantity-controls">
-            <button class="qty-btn qty-minus" onclick="changeQuantity('{{ p.seller_id or p.product_id }}', -1)">-</button>
-            <input type="number" class="qty-input" id="qty-{{ p.seller_id or p.product_id }}" value="1" min="1" readonly>
-            <button class="qty-btn qty-plus" onclick="changeQuantity('{{ p.seller_id or p.product_id }}', 1)">+</button>
+            <button class="qty-btn qty-minus" onclick="changeQuantity('{{ p.id }}', -1)">-</button>
+            <input type="number" class="qty-input" id="qty-{{ p.id }}" value="0" min="0" readonly>
+            <button class="qty-btn qty-plus" onclick="changeQuantity('{{ p.id }}', 1)">+</button>
           </div>
-          <button class="order-btn" onclick="orderProduct('{{ p.seller_id or p.product_id }}')">Заказать</button>
         </div>
       </div>
       {% endfor %}
@@ -80,10 +86,9 @@
       <div class="modal-actions">
         <div class="quantity-controls">
           <button class="qty-btn qty-minus" onclick="changeModalQuantity(-1)">-</button>
-          <input type="number" class="qty-input" id="modal-qty" value="1" min="1" readonly>
+          <input type="number" class="qty-input" id="modal-qty" value="0" min="0" readonly>
           <button class="qty-btn qty-plus" onclick="changeModalQuantity(1)">+</button>
         </div>
-        <button class="order-btn" id="modalOrder">Заказать</button>
       </div>
     </div>
   </div>
@@ -94,15 +99,26 @@
     if (tg) tg.ready();
 
     // фильтр категорий
-    document.getElementById('category').addEventListener('change', function () {
-      const sel = this.value;
+    function applyFilter() {
+      const sel = document.getElementById('category').value;
       document.querySelectorAll('#grid .card').forEach(card => {
-        if (sel === 'all' || card.dataset.category === sel) {
+        const id = card.dataset.id;
+        const qtyInput = document.getElementById('qty-' + id);
+        const count = parseInt(qtyInput.value) || 0;
+        if (sel === 'all') {
+          card.style.display = '';
+        } else if (sel === 'selected') {
+          card.style.display = count > 0 ? '' : 'none';
+        } else if (card.dataset.category === sel) {
           card.style.display = '';
         } else {
           card.style.display = 'none';
         }
       });
+    }
+
+    document.getElementById('category').addEventListener('change', function() {
+      applyFilter();
       window.lazyloadObserve && window.lazyloadObserve();
     });
 
@@ -137,8 +153,10 @@
         modalQty.value = cardQty.value;
       }
 
-      const modalOrder = document.getElementById('modalOrder');
-      modalOrder.onclick = function () { orderProduct(id); };
+      // сохраняем id в модальном окне для синхронизации
+      document.getElementById('modal').dataset.productId = id;
+
+      // убираем обработчик заказа из модального окна, так как теперь общая кнопка
 
       document.getElementById('modal').style.display = 'flex';
       document.getElementById('modal').setAttribute('aria-hidden', 'false');
@@ -154,20 +172,49 @@
     }
 
     // функции для управления количеством
+    function updateTotalQuantity() {
+      let total = 0;
+      document.querySelectorAll('#grid .card').forEach(card => {
+        const id = card.dataset.id;
+        const qtyInput = document.getElementById('qty-' + id);
+        const count = parseInt(qtyInput.value) || 0;
+        total += count;
+      });
+      document.getElementById('totalQty').textContent = total;
+      // обновляем фильтр, если выбрана "Выбранные"
+      const sel = document.getElementById('category').value;
+      if (sel === 'selected') {
+        applyFilter();
+      }
+    }
+
     function changeQuantity(productId, delta) {
       const input = document.getElementById('qty-' + productId);
-      let currentValue = parseInt(input.value) || 1;
+      let currentValue = parseInt(input.value) || 0;
       currentValue += delta;
-      if (currentValue < 1) currentValue = 1;
+      if (currentValue < 0) currentValue = 0;
       input.value = currentValue;
+      updateTotalQuantity();
+      applyFilter();
     }
 
     function changeModalQuantity(delta) {
       const input = document.getElementById('modal-qty');
-      let currentValue = parseInt(input.value) || 1;
+      let currentValue = parseInt(input.value) || 0;
       currentValue += delta;
-      if (currentValue < 1) currentValue = 1;
+      if (currentValue < 0) currentValue = 0;
       input.value = currentValue;
+      // синхронизируем с карточкой
+      const modal = document.getElementById('modal');
+      const productId = modal.dataset.productId;
+      if (productId) {
+        const cardQty = document.getElementById('qty-' + productId);
+        if (cardQty) {
+          cardQty.value = input.value;
+        }
+      }
+      updateTotalQuantity();
+      applyFilter();
     }
 
     function orderProduct(id) {
@@ -175,14 +222,19 @@
       if (!card) { alert('Неизвестный продукт'); return; }
 
       // определяем количество: из модального окна или из карточки
-      let count = 1;
+      let count = 0;
       const modal = document.getElementById('modal');
       if (modal.style.display === 'flex') {
         // заказ из модального окна
-        count = parseInt(document.getElementById('modal-qty').value) || 1;
+        count = parseInt(document.getElementById('modal-qty').value) || 0;
       } else {
         // заказ из карточки
-        count = parseInt(document.getElementById('qty-' + id).value) || 1;
+        count = parseInt(document.getElementById('qty-' + id).value) || 0;
+      }
+
+      if (count <= 0) {
+        alert('Количество должно быть больше 0');
+        return;
       }
 
       const dataToSend = {
@@ -194,18 +246,47 @@
         link: 'https://www.mealty.ru/#sproduct_' + card.dataset.id
       };
 
-      // Логируем заказ в консоль
-      /*
-      console.log('Заказ товара:', {
-        название: dataToSend.title,
-        цена: dataToSend.price + ' руб.',
-        количество: dataToSend.count,
-        описание: dataToSend.desc,
-        ссылка: dataToSend.link
-      });
-      */
+      const json = JSON.stringify([dataToSend]);  // массив для совместимости
 
-      const json = JSON.stringify(dataToSend);
+      if (tg && tg.sendData) {
+        tg.sendData(json); // отправляем JSON в бот
+      } else if (navigator.clipboard) {
+        navigator.clipboard.writeText(json)
+          .then(() => alert('Скопировано: ' + json))
+          .catch(() => alert(json));
+      } else {
+        alert(json);
+      }
+    }
+
+    function orderAllProducts() {
+      const orders = [];
+      document.querySelectorAll('#grid .card').forEach(card => {
+        const id = card.dataset.id;
+        const qtyInput = document.getElementById('qty-' + id);
+        const count = parseInt(qtyInput.value) || 0;
+        if (count > 0) {
+          orders.push({
+            product_id: card.dataset.sellerId,
+           // seller_id: card.dataset.sellerId,
+            title: card.dataset.title,
+            price: card.dataset.price,
+            count: count,
+            desc: card.dataset.desc,
+            link: 'https://www.mealty.ru/#sproduct_' + card.dataset.sellerId
+          });
+        }
+      });
+
+      if (orders.length === 0) {
+        alert('Выберите хотя бы один товар');
+        return;
+      }
+
+      const json = JSON.stringify(orders);
+
+      // временный alert для отображения данных
+      //alert('Отправляемые данные: ' + json);
 
       if (tg && tg.sendData) {
         tg.sendData(json); // отправляем JSON в бот
@@ -220,7 +301,10 @@
 
     
 
-    document.getElementById('refreshBtn').addEventListener('click', () => location.reload());
+    document.getElementById('orderAllBtn').addEventListener('click', orderAllProducts);
+
+    // инициализация
+    updateTotalQuantity();
   </script>
 </body>
 </html>

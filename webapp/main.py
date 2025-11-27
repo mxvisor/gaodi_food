@@ -158,7 +158,11 @@ def fetch_all():
     # итог: если мы не собрали категории из меню, но получили map из карточек — заполним список
     if not categories and categories_map:
         for cid, name in categories_map.items():
-            categories.append({"id": cid, "name": name})
+            categories.append({"id": cid, "name": categories_map[cid]})
+
+    # добавляем уникальный id для каждого товара
+    for i, p in enumerate(products):
+        p['id'] = i
 
     return {"categories": categories, "products": products}
 
