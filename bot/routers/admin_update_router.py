@@ -33,6 +33,16 @@ async def _run_git(*args: str, timeout: int = 30) -> str:
         )
     return stdout.decode(errors='ignore')
 
+# --- Текущий коммит одной строкой
+async def get_current_commit_line() -> str:
+    """Возвращает строку лога текущего коммита (HEAD) в формате "<short_hash> <subject>".
+    В случае ошибки возвращает "UNKNOWN".
+    """
+    try:
+        return (await _run_git("log", "-1", "--oneline", "--no-decorate")).strip()
+    except Exception:
+        return "UNKNOWN"
+
 # --- Асинхронная проверка обновлений и сбор истории коммитов
 async def get_update_info() -> str | None:
     try:
@@ -58,17 +68,33 @@ async def get_update_info() -> str | None:
 # --- Команда /check_update
 @router.message(BotCommands.CHECK_UPDATE.filter)
 async def check_update(message: types.Message):
+    """Проверяет наличие обновлений и всегда показывает текущий локальный коммит.
+
+    Поведение:
+    - Если есть новые коммиты в upstream: показывает список и кнопку обновления.
+    - Если нет обновлений или upstream не настроен: сообщает об отсутствии и выводит текущий HEAD.
+    """
     if not message.from_user or not db.is_admin(message.from_user.id):
         return
     await message.answer("Проверяю обновления…")
+
+    # Всегда получаем строку лога текущего коммита.
+    current_line = await get_current_commit_line()
+
     commits = await get_update_info()
     if commits:
-    #if True:
-        text = f"Доступны новые коммиты:\n\n{commits}"
+        text = (
+            "Доступны новые коммиты.\n"
+            f"Текущий HEAD: {current_line}\n\n"
+            f"{commits}\n\n"
+            "Нажмите 'Обновить ✅' чтобы применить."
+        )
         kb = make_update_keyboard()
         await message.answer(text, reply_markup=kb)
     else:
-        await message.answer("Обновлений нет.")
+        await message.answer(
+            f"Обновлений нет.\nТекущий коммит: {current_line}"
+        )
 
 # --- Обработчик кнопки обновления
 @router.callback_query(UpdateAction.filter_action(UpdateAction.ActionType.DO_UPDATE))
