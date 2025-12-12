@@ -12,6 +12,9 @@ if not BOT_TOKEN:
 WEBAPP_URL = os.getenv("WEBAPP_URL")
 # WEBAPP_URL is optional; when missing, UI should work without WebApp button
 
+EXTENSION_URL = os.getenv("EXTENSION_URL")
+# EXTENSION_URL is optional; URL to Chrome extension popup
+
 BOT_OWNER_RAW = os.getenv("BOT_OWNER")
 if not BOT_OWNER_RAW or not BOT_OWNER_RAW.strip():
     raise ValueError("BOT_OWNER is not set in environment variables")

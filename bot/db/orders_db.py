@@ -625,6 +625,20 @@ def get_orders_total(orders: List[UserOrder]) -> int:
         total += price * order.count
     return total
 
+def get_users_without_orders() -> List[User]:
+    """
+    Возвращает список пользователей, у которых нет текущих заказов.
+    """
+    all_users = get_users()
+    grouped_orders = get_orders_grouped_by_user()
+    
+    users_without_orders = []
+    for user in all_users:
+        if user.user_id not in grouped_orders:
+            users_without_orders.append(user)
+    
+    return users_without_orders
+
 
 # ===== password helpers =====
 

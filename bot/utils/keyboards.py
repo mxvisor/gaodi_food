@@ -106,6 +106,7 @@ class OrdersViewAction(CallbackData, BaseActionCallback, prefix="ordersview"):
     class ActionType(Enum):
         BY_USER = "by_user"
         BY_PRODUCT = "by_product"
+        EXPORT_EXTENSION = "export_ext"
 
     action: ActionType
 
@@ -344,6 +345,13 @@ def make_orders_view_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Все заказы по пользователям", callback_data=OrdersViewAction(action=OrdersViewAction.ActionType.BY_USER).pack())],
         [InlineKeyboardButton(text="Все заказы по товарам", callback_data=OrdersViewAction(action=OrdersViewAction.ActionType.BY_PRODUCT).pack())]
+    ])
+
+
+def make_export_extension_keyboard() -> InlineKeyboardMarkup:
+    """Create keyboard with export button for Chrome extension."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Список для расширения", callback_data=OrdersViewAction(action=OrdersViewAction.ActionType.EXPORT_EXTENSION).pack())]
     ])
 
 

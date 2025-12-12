@@ -110,6 +110,50 @@ def make_order_text_by_product(product: db.Product, orders: List[db.UserOrder]) 
 # ========== ORDER VIEWING ==========
 # Функции для просмотра заказов
 
+async def export_for_extension_handler(message: types.Message):
+    """Генерирует список ID товаров для Chrome расширения с учётом количества товаров"""
+    from utils.config import EXTENSION_URL
+    
+    grouped_orders = db.get_orders_grouped_by_product()
+    
+    if not grouped_orders:
+        await message.answer("Нет текущих заказов для экспорта.")
+        return
+    
+    product_ids = []
+    for product_id, orders in grouped_orders.items():
+        product = db.get_product(product_id)
+        if not product or not product.product_id:
+            continue
+        
+        # Подсчитываем общее количество заказов этого товара
+        total_count = sum(order.count for order in orders)
+        
+        # Добавляем ID столько раз, сколько заказано
+        # product_id на самом деле является seller_id в базе
+        for _ in range(total_count):
+            product_ids.append(str(product.product_id))
+    
+    if not product_ids:
+        await message.answer("Нет товаров для экспорта (не найдены product_id).")
+        return
+    
+    # Формируем список ID через запятую
+    ids_text = ",".join(product_ids)
+    
+    if EXTENSION_URL:
+        extension_url = f"{EXTENSION_URL}?ids={ids_text}&auto=1&clear_basket=1"
+        text = (
+            f"📋 <b>Список для расширения</b> ({len(product_ids)} шт.)\n\n"
+            f"<b>ID товаров:</b>\n<code>{ids_text}</code>\n\n"
+            f"<b>Ссылка для расширения:</b>\n<code>{extension_url}</code>\n\n"
+            f"💡 <i>Скопируйте ссылку выше и вставьте в адресную строку браузера</i>"
+        )
+    else:
+        text = f"ID товаров ({len(product_ids)} шт.):\n<code>{ids_text}</code>"
+    
+    await message.answer(text, parse_mode="HTML")
+
 @admin_orders_router.message(BotCommands.ADMIN_ORDERS_MENU.filter, IsAdmin())
 async def all_orders_menu_handler(message: types.Message):
     """Показывает меню выбора типа просмотра заказов"""
@@ -122,9 +166,10 @@ async def orders_view_callback(callback: types.CallbackQuery, callback_data: Ord
     handlers = {
         OrdersViewAction.ActionType.BY_USER: all_orders_by_user_handler,
         OrdersViewAction.ActionType.BY_PRODUCT: all_orders_by_product_handler,
+        OrdersViewAction.ActionType.EXPORT_EXTENSION: export_for_extension_handler,
     }
 
-    handler = handlers.get(callback_data.view_type)
+    handler = handlers.get(callback_data.action)
     if handler:
         await handler(callback.message)
 
@@ -151,6 +196,19 @@ async def all_orders_by_user_handler(message: types.Message):
             text = make_order_text(order, is_current=True, show_name=False)
             keyboard = make_order_done_keyboard(order.user_id, order.product_id, order.done)
             await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    
+    # Показываем пользователей без заказов
+    users_without_orders = db.get_users_without_orders()
+    if users_without_orders:
+        names = [user.name for user in users_without_orders]
+        await message.answer(
+            f"<b>Пользователи без заказов:</b>\n{', '.join(names)}",
+            parse_mode="HTML"
+        )
+    
+    # Добавляем кнопку для экспорта в расширение
+    from utils.keyboards import make_export_extension_keyboard
+    await message.answer("Экспорт:", reply_markup=make_export_extension_keyboard())
 
 
 
@@ -174,6 +232,19 @@ async def all_orders_by_product_handler(message: types.Message):
         # Кнопка для отметки всех заказов этого товара как выполненных
         keyboard = make_product_done_keyboard(product.product_id, all_done)
         await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    
+    # Показываем пользователей без заказов
+    users_without_orders = db.get_users_without_orders()
+    if users_without_orders:
+        names = [user.name for user in users_without_orders]
+        await message.answer(
+            f"<b>Пользователи без заказов:</b>\n{', '.join(names)}",
+            parse_mode="HTML"
+        )
+    
+    # Добавляем кнопку для экспорта в расширение
+    from utils.keyboards import make_export_extension_keyboard
+    await message.answer("Экспорт:", reply_markup=make_export_extension_keyboard())
 
 
 @admin_orders_router.callback_query(OrderAction.filter_action(OrderAction.ActionType.DONE_PRODUCT))
