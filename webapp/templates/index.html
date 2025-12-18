@@ -37,7 +37,7 @@
      data-product-id="{{ p.product_id }}"
      data-desc="{{ p.desc|escape }}"
      data-title="{{ p.title|escape }}"
-     data-price="{{ p.price }}"">
+     data-price="{{ p.price }}">
 <div class="card-image">
   {% if p.is_new %}
     <img class="badge-new" src="/static/new.png" alt="Новинка">
@@ -248,14 +248,14 @@
 
       const json = JSON.stringify([dataToSend]);  // массив для совместимости
 
-      if (tg && tg.sendData) {
-        tg.sendData(json); // отправляем JSON в бот
-      } else if (navigator.clipboard) {
-        navigator.clipboard.writeText(json)
-          .then(() => alert('Скопировано: ' + json))
-          .catch(() => alert(json));
-      } else {
-        alert(json);
+      try {
+        if (tg && typeof tg.sendData === 'function') {
+          tg.sendData(json); // отправляем JSON в бот
+        } else {
+          throw new Error('Telegram WebApp not available');
+        }
+      } catch (error) {
+        alert('Отправка боту не удалась, Данные:\n' + json);
       }
     }
 
@@ -288,14 +288,14 @@
       // временный alert для отображения данных
       //alert('Отправляемые данные: ' + json);
 
-      if (tg && tg.sendData) {
-        tg.sendData(json); // отправляем JSON в бот
-      } else if (navigator.clipboard) {
-        navigator.clipboard.writeText(json)
-          .then(() => alert('Скопировано: ' + json))
-          .catch(() => alert(json));
-      } else {
-        alert(json);
+      try {
+        if (tg && typeof tg.sendData === 'function') {
+          tg.sendData(json); // отправляем JSON в бот
+        } else {
+          throw new Error('Telegram WebApp not available');
+        }
+      } catch (error) {
+        alert('Отправка боту не удалась, Данные:\n' + json);
       }
     }
 
