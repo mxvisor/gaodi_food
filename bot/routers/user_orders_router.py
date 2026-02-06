@@ -125,7 +125,7 @@ async def webapp_data_handler(message: types.Message):
     added_orders = []
     for order_data in orders_list:
         # Обновляем/добавляем товар в каталог продуктов
-        pid = int(order_data.get("selled_id", 0) or 0) # Это не ошибка, берётся реально seller_id!
+        pid = int(order_data.get("seller_id", 0) or 0) # Это не ошибка, берётся реально seller_id!
         title = order_data.get("title", "")
         price = int(order_data.get("price", 0) or 0)
         link = order_data.get("link", "")
