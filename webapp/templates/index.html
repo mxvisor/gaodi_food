@@ -260,11 +260,8 @@
         return;
       }
 
-      // Проверяем, запущено ли в Telegram (initData должно быть непустым, platform не 'unknown')
-      if (!tg.initData || tg.platform === 'unknown') {
-        alert('WebApp запущен вне Telegram — данные не отправлены');
-        return;
-      }
+      // Отладка: выводим initData и platform в консоль
+      console.log('tg.initData:', tg.initData, 'tg.platform:', tg.platform);
 
       try {
         tg.sendData(json);
