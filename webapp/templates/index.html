@@ -6,6 +6,10 @@
   <title>Mealty WebApp</title>
   <link rel="stylesheet" href="/static/style.css" />
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script>
+    const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+    if (tg) tg.ready();
+  </script>
 </head>
 <body>
   <header class="header">
@@ -95,8 +99,8 @@
 
   <script src="/static/lazyload.js"></script>
   <script>
-    const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
-    if (tg) tg.ready();
+    // const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+    // if (tg) tg.ready();
 
     // фильтр категорий
     function applyFilter() {
@@ -217,47 +221,6 @@
       applyFilter();
     }
 
-    function orderProduct(id) {
-      const card = document.querySelector(`.card[data-id="${id}"]`);
-      if (!card) { alert('Неизвестный продукт'); return; }
-
-      // определяем количество: из модального окна или из карточки
-      let count = 0;
-      const modal = document.getElementById('modal');
-      if (modal.style.display === 'flex') {
-        // заказ из модального окна
-        count = parseInt(document.getElementById('modal-qty').value) || 0;
-      } else {
-        // заказ из карточки
-        count = parseInt(document.getElementById('qty-' + id).value) || 0;
-      }
-
-      if (count <= 0) {
-        alert('Количество должно быть больше 0');
-        return;
-      }
-
-      const dataToSend = {
-        product_id: card.dataset.id,
-        title: card.dataset.title,
-        price: card.dataset.price,
-        count: count,
-        desc: card.dataset.desc,
-        link: 'https://www.mealty.ru/#sproduct_' + card.dataset.id
-      };
-
-      const json = JSON.stringify([dataToSend]);  // массив для совместимости
-
-      try {
-        if (tg && typeof tg.sendData === 'function') {
-          tg.sendData(json); // отправляем JSON в бот
-        } else {
-          throw new Error('Telegram WebApp not available');
-        }
-      } catch (error) {
-        alert('Отправка боту не удалась, Данные:\n' + json);
-      }
-    }
 
     function orderAllProducts() {
       const orders = [];
@@ -267,8 +230,8 @@
         const count = parseInt(qtyInput.value) || 0;
         if (count > 0) {
           orders.push({
-            product_id: card.dataset.sellerId,
-           // seller_id: card.dataset.sellerId,
+            product_id: card.dataset.productId,
+            seller_id: card.dataset.sellerId,
             title: card.dataset.title,
             price: card.dataset.price,
             count: count,
@@ -284,18 +247,32 @@
       }
 
       const json = JSON.stringify(orders);
+      const MAX_PAYLOAD = 4096; // лимит Telegram WebApp.sendData в байтах
+      // считаем размер в байтах UTF-8 (используем TextEncoder)
+      const byteLen = new TextEncoder().encode(json).length;
+      if (byteLen > MAX_PAYLOAD) {
+        alert('Данные слишком большие для отправки (' + byteLen + ' байт)');
+        return;
+      }
 
-      // временный alert для отображения данных
-      //alert('Отправляемые данные: ' + json);
+      if (!tg || typeof tg.sendData !== 'function') {
+        alert('Telegram WebApp недоступен');
+        return;
+      }
+
+      // Проверяем, запущено ли в Telegram (initData должно быть непустым, platform не 'unknown')
+      if (!tg.initData || tg.platform === 'unknown') {
+        alert('WebApp запущен вне Telegram — данные не отправлены');
+        return;
+      }
 
       try {
-        if (tg && typeof tg.sendData === 'function') {
-          tg.sendData(json); // отправляем JSON в бот
-        } else {
-          throw new Error('Telegram WebApp not available');
-        }
-      } catch (error) {
-        alert('Отправка боту не удалась, Данные:\n' + json);
+        tg.sendData(json);
+        //alert('Данные отправлены боту'); // Опционально для отладки
+        return;
+      } catch (err) {
+        alert('Отправка боту не удалась, Ошибка:\n' + (err && err.message ? err.message : err));
+        return;
       }
     }
 
